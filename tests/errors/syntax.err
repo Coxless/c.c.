@@ -1,0 +1,4 @@
+syntax.c.c:1:41: エラー: `;` が必要です
+  |
+1 | type Port = u16 where 1 <= self <= 65535
+  |                                         ^

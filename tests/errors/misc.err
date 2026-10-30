@@ -1,0 +1,33 @@
+misc.c.c:2:38: エラー: pre / post は contract fn にだけ書けます
+  |
+2 | fn pure_fn(i64 x) -> i64 effects(io) pre(x > 0) {
+  |                                      ^^^^^^^^^^
+  = 補足: `contract fn pure_fn` と宣言してください
+
+misc.c.c:3:3: エラー: `helper` の呼び出しには効果 unsafe が必要ですが、`pure_fn` は effects(io) しか宣言していません
+  |
+3 |   helper();
+  |   ^^^^^^^^
+  = 補足: `helper` は効果を宣言していないため unsafe 扱いです。`helper` に effects(...) を付けてください
+
+misc.c.c:5:3: エラー: cpp ブロックには効果 unsafe が必要ですが、`pure_fn` は effects(io) しか宣言していません
+  |
+5 |   cpp { std::puts("hi"); }
+  |   ^^^
+  = 補足: cpp ブロックの中身は検査できないため unsafe 扱いです
+
+misc.c.c:6:11: エラー: `?`（失敗すると例外を送出します）には効果 throw が必要ですが、`pure_fn` は effects(io) しか宣言していません
+  |
+6 |   let y = Foo::bar()?;
+  |           ^^^^^^^^^^^
+
+misc.c.c:6:11: エラー: `Foo::bar` の呼び出しには効果 unsafe が必要ですが、`pure_fn` は effects(io) しか宣言していません
+  |
+6 |   let y = Foo::bar()?;
+  |           ^^^^^^^^^^
+  = 補足: C.C. で宣言されていない関数は unsafe 扱いです
+
+misc.c.c:7:14: エラー: old() は post 条件の中でだけ使えます
+  |
+7 |   return x + old(x);
+  |              ^^^^^^

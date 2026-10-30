@@ -1,0 +1,16 @@
+exit: 0
+--- stdout
+ok({"address":null,"age":30,"email":"a@example.com","id":1,"name":"Alice","tags":[]})
+err(User の検証に失敗しました（7 件）
+  - id: self > 0 を満たしていません
+  - name: 1 <= len(self) <= 50 を満たしていません
+  - email: matches email_format を満たしていません
+  - age: 0 <= self <= 150 を満たしていません
+  - tags[1]: 文字列が必要です
+  - address.city: len(self) >= 1 を満たしていません
+  - address.zip: 文字列が必要です)
+err(User の検証に失敗しました（1 件）
+  - (全体): 13歳以上（age == none || age >= 13）)
+err(User の検証に失敗しました（1 件）
+  - (全体): JSON として解釈できません)
+--- stderr

@@ -1,0 +1,9 @@
+exit: abort
+--- stdout
+2
+--- stderr
+contract violation: pre「偶数」
+  条件: x % 2 == 0
+  責任: 呼び出し側  enforce.c.c:10  main() → half()
+  契約: enforce.c.c:3
+  値:   x = 3

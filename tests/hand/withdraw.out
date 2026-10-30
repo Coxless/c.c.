@@ -1,0 +1,14 @@
+exit: 0
+--- stdout
+withdraw(100) -> 100 balance 200
+--- stderr
+contract violation: pre「残高が足りる」
+  条件: a.balance >= amt
+  責任: 呼び出し側  withdraw.cpp:44  main() → withdraw()
+  契約: withdraw.cpp:17
+  値:   a.balance = 200, amt = 500
+contract violation: post「a.balance == old(a.balance) - amt」
+  条件: a.balance == old_balance - amt
+  責任: 実装側  withdraw.cpp:35  withdraw_buggy()
+  呼び出し元: withdraw.cpp:45  main()
+  値:   a.balance = -400, old_balance = -300, amt = 50

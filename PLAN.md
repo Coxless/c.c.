@@ -145,3 +145,31 @@ contract fn withdraw(Account& a, i64 amt) -> i64
 | エラーテスト | 不正な `.c.c` に対するエラーメッセージ（位置と文面）を比較 |
 
 `cargo test` 一つで3種類すべてが走るようにする。
+
+---
+
+## 6. 進捗
+
+| ステップ | 状態 | 確認方法 |
+|---|---|---|
+| 0. ヘッダーライブラリ | 完了 | `examples/hand/` を手書き。`cargo test` の `hand` / `hand_literal_is_checked_at_compile_time` |
+| 1. `type ... where` | 完了 | `examples/port.c.c` |
+| 2. 関数と関数契約 | 完了 | `examples/withdraw.c.c`、`tests/run/enforce.c.c` |
+| 3. `schema` | 完了（`enum` は未対応） | `examples/user.c.c` |
+| 4. 効果の検査 | 完了 | `examples/effects.c.c`、`tests/errors/effects.c.c` |
+
+### 実装中に決めたこと
+
+- **効果を省略した関数（未決事項1）**：検査せず「何でも可」とする。ただし効果を宣言した関数からそれを呼ぶには `unsafe` が必要。既存コードに段階的に注釈を足していける
+- **既存 C++ の効果（未決事項2）**：`extern fn` で宣言していない C++ 関数と、関数内の `cpp { }` は `unsafe` 扱い。`extern fn f(...) effects(...);` で効果を絞れる
+- **`?`**：失敗時は `cc::Failure` 例外を送出する。したがって `throw` 効果が必要。`main` で捕まえてエラーメッセージを表示し、終了コード 1 で終わる
+- **契約違反の位置**：生成コードに `#line` を入れ、`std::source_location` で `.c.c` の行番号を報告する。呼び出し位置は契約付き関数の隠し引数（既定引数）で受け取る
+- **スキーマのフィールド**：`where` 付きのフィールドは入れ子の条件付き型（`User::id_t` など）になる。元の型へは暗黙に変換できるので読むときは普通の値として使える
+- **対応コンパイラ**：g++ 13 以降。clang 18 は libstdc++ 13 の `std::expected` を使えないため対象外
+
+### 既知の制限（区切りでの見直し候補）
+
+- メソッド呼び出し（`x.size()` など）の効果は追跡していない
+- `matches` / `transform` に使えるのは組み込み関数か `extern fn` だけ
+- 型の推論は最小限。型が分からない式の誤りは C++ コンパイラのエラーになる
+- スキーマに `enum` がない。値を作る手段は `parse` か `cpp` / `extern fn` だけ

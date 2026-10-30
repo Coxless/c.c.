@@ -1,0 +1,4 @@
+effects.c.c:9:3: エラー: `load` の呼び出しには効果 io, throw が必要ですが、`bad` は effects() しか宣言していません
+  |
+9 |   load("x");
+  |   ^^^^^^^^^
