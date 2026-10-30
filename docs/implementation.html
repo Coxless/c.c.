@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C.C. 実装解説</title>
+<style>
+:root {
+  --bg: #fbfaf7; --fg: #1d1d1b; --muted: #5f5d57; --line: #e2dfd6; --card: #ffffff;
+  --code-bg: #f3f1ea; --accent: #2f5d8a; --accent-soft: #e5edf5; --ok: #2e7d4f; --bad: #b3412f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #171716; --fg: #ebe9e3; --muted: #a8a59c; --line: #34332f; --card: #1f1f1d;
+    --code-bg: #232321; --accent: #8db8e3; --accent-soft: #23303d; --ok: #7cc49a; --bad: #e98b79;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #171716; --fg: #ebe9e3; --muted: #a8a59c; --line: #34332f; --card: #1f1f1d;
+  --code-bg: #232321; --accent: #8db8e3; --accent-soft: #23303d; --ok: #7cc49a; --bad: #e98b79;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.75 "Hiragino Sans", "Noto Sans JP", "Yu Gothic", system-ui, sans-serif; }
+main { max-width: 1040px; margin: 0 auto; padding: 40px 16px 80px; }
+h1 { font-size: 2rem; margin: 0 0 .25em; letter-spacing: .02em; }
+h2 { font-size: 1.35rem; margin: 3em 0 .6em; padding-top: .6em; border-top: 1px solid var(--line); }
+h3 { font-size: 1.05rem; margin: 1.8em 0 .4em; }
+p, li { max-width: 46em; }
+.lead { color: var(--muted); font-size: 1.05rem; }
+a { color: var(--accent); }
+code { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: .88em; }
+p code, li code, td code { background: var(--code-bg); padding: .1em .35em; border-radius: 4px; }
+pre.code { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+  overflow-x: auto; margin: 0; line-height: 1.5; font-size: .86rem; }
+pre.code code { font-size: inherit; }
+.pair { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 14px; margin: 1em 0; }
+.pair > div { min-width: 0; }
+.label { font-size: .8rem; color: var(--muted); margin: 0 0 4px; letter-spacing: .05em; }
+.pair.stack { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 760px) { .pair { grid-template-columns: minmax(0, 1fr); } }
+.pipeline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 1.2em 0; }
+.stage { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+.stage b { display: block; font-size: .95rem; }
+.stage span { font-size: .78rem; color: var(--muted); }
+.stage.io { background: var(--accent-soft); border-color: transparent; }
+.arrow { color: var(--muted); }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: .93rem; }
+.table-wrap { overflow-x: auto; }
+th, td { border-bottom: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: .85rem; }
+.status { color: var(--ok); font-weight: 600; white-space: nowrap; }
+.note { border-left: 3px solid var(--accent); background: var(--card); padding: 10px 14px; margin: 1.2em 0; border-radius: 0 6px 6px 0; }
+.note p { margin: .3em 0; }
+nav.toc { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 18px; margin: 1.5em 0; }
+nav.toc ol { margin: 0; padding-left: 1.3em; }
+.bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+<h1>C.C. 実装解説</h1>
+<p class="lead">PLAN.md のステップ0〜4で作ったもの（ヘッダーライブラリ <code>cc.hpp</code> とトランスパイラ <code>ccc</code>）が、何を受け取り、どんな C++ を出し、どこで何を検査するかをまとめます。コード片はすべてリポジトリ内の実際のファイル（examples/・tests/）から抜き出しています。</p>
+
+<nav class="toc"><ol>
+<li><a href="#overview">全体の流れ</a></li>
+<li><a href="#runtime">ステップ0：ランタイム cc.hpp</a></li>
+<li><a href="#refined">ステップ1：条件付きの型</a></li>
+<li><a href="#contracts">ステップ2：関数の契約と責任</a></li>
+<li><a href="#schema">ステップ3：スキーマ</a></li>
+<li><a href="#effects">ステップ4：効果と静的検査</a></li>
+<li><a href="#tests">テスト</a></li>
+<li><a href="#decisions">決めたことと制限</a></li>
+</ol></nav>
+
+<h2 id="overview">1. 全体の流れ</h2>
+<p><code>.c.c</code> を C++23 に変換し、あとは普通の C++ コンパイラ（g++ 13 以降）でビルドします。C.C. 独自の価値（契約・スキーマ・効果）はすべてトランスパイラ側にあり、生成コードはランタイムヘッダー1本に依存するだけです。</p>
+<div class="pipeline">
+  <div class="stage io"><b>.c.c</b><span>ソース</span></div><span class="arrow">→</span>
+  <div class="stage"><b>lexer.rs</b><span>字句解析・cpp ブロック切り出し</span></div><span class="arrow">→</span>
+  <div class="stage"><b>parser.rs</b><span>再帰下降で AST</span></div><span class="arrow">→</span>
+  <div class="stage"><b>check.rs</b><span>効果・Raw・リテラル・? の検査</span></div><span class="arrow">→</span>
+  <div class="stage"><b>emit.rs</b><span>C++23 を出力</span></div><span class="arrow">→</span>
+  <div class="stage io"><b>.cpp + cc.hpp</b><span>g++ でビルド</span></div>
+</div>
+<div class="table-wrap"><table>
+<tr><th>ファイル</th><th>役割</th></tr>
+<tr><td><code>runtime/cc/cc.hpp</code></td><td>生成コードが include するヘッダー。エラー型、契約違反レポート、JSON の decode / encode、組み込み関数</td></tr>
+<tr><td><code>compiler/src/lexer.rs</code></td><td>トークン化。<code>cpp { ... }</code> の中身は C++ として解釈せず、括弧の対応だけ見てそのまま取り出す</td></tr>
+<tr><td><code>compiler/src/parser.rs</code></td><td>手書きの再帰下降パーサ。連鎖比較 <code>1 &lt;= x &lt;= 9</code> は1つのノードにまとめる</td></tr>
+<tr><td><code>compiler/src/check.rs</code></td><td>名前表、効果の包含関係、<code>self</code> / <code>old</code> / <code>?</code> の置き場所、<code>Raw&lt;T&gt;</code> の誤用、条件付き型への暗黙変換</td></tr>
+<tr><td><code>compiler/src/emit.rs</code></td><td>C++ 生成。各文の前に <code>#line</code> を入れ、C++ 側のエラーや違反レポートが .c.c の行を指すようにする</td></tr>
+<tr><td><code>compiler/src/diag.rs</code></td><td><code>file:行:列</code> とキャレット付きのエラー表示</td></tr>
+</table></div>
+
+<h2 id="runtime">2. ステップ0：ランタイム cc.hpp</h2>
+<p>トランスパイラを書く前に、生成コードの完成形を <code>examples/hand/</code> に手で書き、それが使う部品を <code>cc.hpp</code> にまとめました。トランスパイラはこの手書き版と同じ形の C++ を出すように作っています。</p>
+<div class="table-wrap"><table>
+<tr><th>部品</th><th>内容</th></tr>
+<tr><td><code>RefineError</code></td><td>条件付きの型の条件が破れた。型名と、.c.c に書いた条件の文字列を持つ</td></tr>
+<tr><td><code>FieldError</code> / <code>ParseError</code></td><td>スキーマの parse で壊れていたフィールドを<strong>全件</strong>、パス（<code>tags[1]</code>、<code>address.city</code>）付きで保持</td></tr>
+<tr><td><code>Raw&lt;T&gt;</code></td><td>未検証の外部入力。<code>T</code> への変換手段がないので、parse を通さずに使うと C++ でもエラーになる</td></tr>
+<tr><td><code>violation()</code></td><td>契約違反レポート。責任（呼び出し側／実装側）、条件、位置、関係する値を表示。<code>enforce</code>（停止）/ <code>observe</code>（報告して続行）/ <code>off</code></td></tr>
+<tr><td><code>decode&lt;T&gt;</code> / <code>refine_into&lt;S&gt;</code> / <code>encode</code></td><td>JSON と生成型の相互変換。条件付き型・スキーマ・<code>vector</code>・<code>optional</code> を型で振り分ける</td></tr>
+<tr><td><code>run_main</code></td><td><code>main</code> を包み、<code>?</code> などで送出された例外を「エラー: ...」と表示して終了コード 1 にする</td></tr>
+<tr><td>組み込み関数</td><td><code>len</code> <code>trim</code> <code>email_format</code> <code>parse_json</code>（純粋）、<code>print</code>（io）、<code>log</code>（log）、<code>read_file</code>（io, throw）</td></tr>
+</table></div>
+<p>完了条件の3つ（<code>Port::of&lt;0&gt;()</code> がコンパイルエラーになる、壊れたフィールドが全件報告される、残高不足で「責任: 呼び出し側」と出る）は <code>cargo test</code> の <code>hand</code> 系テストで確認しています。</p>
+
+<h2 id="refined">3. ステップ1：条件付きの型</h2>
+<p><code>type</code> 宣言1行が、検査付きの薄いラッパークラスになります。コンストラクタは private なので、値を作る方法は <code>try_from</code>（実行時に検査、<code>std::expected</code> を返す）と <code>of&lt;V&gt;()</code>（リテラル用、<code>requires</code> でコンパイル時に検査）の2つだけです。</p>
+<div class="pair">
+  <div><p class="label">入力 examples/port.c.c</p><pre class="code "><code>type Port = u16 where 1 &lt;= self &lt;= 65535;</code></pre></div>
+  <div><p class="label">出力 tests/snapshot/port.cpp</p><pre class="code "><code>class Port {
+ public:
+  using underlying_type = std::uint16_t;
+  static constexpr bool check(const std::uint16_t&amp; self) { return 1 &lt;= self &amp;&amp; self &lt;= 65535; }
+  static constexpr std::expected&lt;Port, ::cc::RefineError&gt; try_from(std::uint16_t v) {
+    if (!check(v)) return std::unexpected(::cc::RefineError{&quot;Port&quot;, &quot;1 &lt;= self &lt;= 65535&quot;});
+    return Port(std::move(v));
+  }
+  // Literals: checked at compile time, no runtime check left.
+  template &lt;std::uint16_t V&gt;
+    requires(check(V))
+  static consteval Port of() { return Port(V); }
+  constexpr const std::uint16_t&amp; get() const { return v_; }
+  constexpr operator const std::uint16_t&amp;() const { return v_; }
+  friend constexpr bool operator==(const Port&amp;, const Port&amp;) = default;
+ private:
+  explicit constexpr Port(std::uint16_t v) : v_(std::move(v)) {}
+  std::uint16_t v_;
+};</code></pre></div>
+</div>
+<p>リテラルを条件付きの型に入れると <code>of&lt;V&gt;()</code> に変換されるため、実行時のチェックは残りません。型の分からない値から暗黙に変換しようとすると、トランスパイル時にエラーになります（<a href="#effects">5章</a>）。</p>
+<div class="pair">
+  <div><p class="label">使う側</p><pre class="code "><code>fn main() effects(io) {
+  let http: Port = 8080;
+  print(&quot;literal:&quot;, http);
+  print(&quot;try_from(443):&quot;, Port::try_from(443));
+  print(&quot;try_from(0):&quot;, Port::try_from(0));
+}</code></pre></div>
+  <div><p class="label">実行結果</p><pre class="code "><code>literal: 8080
+try_from(443): ok(443)
+try_from(0): err(Port の条件 1 &lt;= self &lt;= 65535 を満たしていません)</code></pre></div>
+</div>
+<p>元の型への暗黙変換（<code>operator const T&amp;</code>）を持たせているので、読むときは普通の値として比較・計算・表示できます。</p>
+
+<h2 id="contracts">4. ステップ2：関数の契約と責任</h2>
+<p><code>contract fn</code> の <code>pre</code> / <code>post</code> は、関数の入口と <code>return</code> の直前で行う実行時チェックになります。</p>
+<div class="pair stack">
+  <div><p class="label">入力 examples/withdraw.c.c</p><pre class="code "><code>contract fn withdraw(Account&amp; a, i64 amt) -&gt; i64
+  effects(log)
+  pre(amt &gt; 0, &quot;金額は正&quot;)
+  pre(a.balance &gt;= amt, &quot;残高が足りる&quot;)
+  post(r: r == amt)
+  post(a.balance == old(a.balance) - amt)
+{
+  a.balance -= amt;
+  log(&quot;withdraw&quot;, amt);
+  return amt;
+}</code></pre></div>
+  <div><p class="label">出力（関数本体）</p><pre class="code "><code>std::int64_t withdraw(Account&amp; a, std::int64_t amt, std::source_location cc_caller) noexcept {
+#line 10 &quot;withdraw.c.c&quot;
+  if (!(amt &gt; 0)) ::cc::violation(::cc::Blame::caller, &quot;pre&quot;, &quot;金額は正&quot;, &quot;amt &gt; 0&quot;, cc_caller, std::source_location::current(), {{&quot;amt&quot;, ::cc::repr(amt)}});
+#line 11 &quot;withdraw.c.c&quot;
+  if (!(a.balance &gt;= amt)) ::cc::violation(::cc::Blame::caller, &quot;pre&quot;, &quot;残高が足りる&quot;, &quot;a.balance &gt;= amt&quot;, cc_caller, std::source_location::current(), {{&quot;a.balance&quot;, ::cc::repr(a.balance)}, {&quot;amt&quot;, ::cc::repr(amt)}});
+  const auto cc_old_0 = a.balance;  // old(a.balance)
+  auto cc_post = [&amp;]([[maybe_unused]] const std::int64_t&amp; cc_result) {
+#line 12 &quot;withdraw.c.c&quot;
+    if (const auto&amp; r = cc_result; !(r == amt)) ::cc::violation(::cc::Blame::callee, &quot;post&quot;, &quot;r == amt&quot;, &quot;r == amt&quot;, cc_caller, std::source_location::current(), {{&quot;r&quot;, ::cc::repr(r)}, {&quot;amt&quot;, ::cc::repr(amt)}});
+#line 13 &quot;withdraw.c.c&quot;
+    if (!(a.balance == cc_old_0 - amt)) ::cc::violation(::cc::Blame::callee, &quot;post&quot;, &quot;a.balance == old(a.balance) - amt&quot;, &quot;a.balance == old(a.balance) - amt&quot;, cc_caller, std::source_location::current(), {{&quot;a.balance&quot;, ::cc::repr(a.balance)}, {&quot;old(a.balance)&quot;, ::cc::repr(cc_old_0)}, {&quot;amt&quot;, ::cc::repr(amt)}});
+  };
+#line 15 &quot;withdraw.c.c&quot;
+  a.balance -= amt;
+#line 16 &quot;withdraw.c.c&quot;
+  ::cc::log(std::string(&quot;withdraw&quot;), amt);
+#line 17 &quot;withdraw.c.c&quot;
+  { std::int64_t cc_r = amt; cc_post(cc_r); return cc_r; }
+}</code></pre></div>
+</div>
+<h3>変換の要点</h3>
+<ul>
+<li><strong>pre</strong>：関数の先頭で検査し、破れていれば <code>Blame::caller</code>（呼び出し側の責任）で報告します。</li>
+<li><strong>old(x)</strong>：pre の後で <code>const auto cc_old_N = x;</code> としてコピーを取り、post ではそのコピーと比べます。</li>
+<li><strong>post</strong>：ラムダ <code>cc_post</code> にまとめ、すべての <code>return</code> を「値を一度変数に入れる → <code>cc_post</code> を呼ぶ → 返す」に書き換えます。破れていれば <code>Blame::callee</code>（実装側の責任）です。</li>
+<li><strong>呼び出し位置</strong>：契約付きの関数には隠し引数 <code>std::source_location cc_caller = std::source_location::current()</code> を付けます。既定引数は呼び出し側で評価されるので、誰が呼んだかが分かります。</li>
+<li><strong>.c.c の行番号</strong>：各文の前に <code>#line N "withdraw.c.c"</code> を出すので、<code>source_location</code> は C++ ではなく .c.c の行を指します。</li>
+<li><strong>値の表示</strong>：条件に出てくる変数・フィールド・<code>old(...)</code> を拾い、違反したときだけ <code>repr()</code> で文字列にします。</li>
+<li><strong>effects に throw がない</strong>ので <code>noexcept</code> が付いています。</li>
+</ul>
+<h3>違反レポート（observe モードで実行）</h3>
+<pre class="code "><code>[log] withdraw 100
+contract violation: pre「残高が足りる」
+  条件: a.balance &gt;= amt
+  責任: 呼び出し側  withdraw.c.c:35  pay() → withdraw()
+  契約: withdraw.c.c:11
+  値:   a.balance = 200, amt = 500
+[log] withdraw 500
+contract violation: post「残高が amt だけ減る」
+  条件: a.balance == old(a.balance) - amt
+  責任: 実装側  withdraw.c.c:23  withdraw_buggy()
+  呼び出し元: withdraw.c.c:44  main()
+  値:   a.balance = -400, old(a.balance) = -300, amt = 50</code></pre>
+
+<h2 id="schema">5. ステップ3：スキーマ</h2>
+<p><code>schema</code> 1つから、構造体、<code>parse()</code>、<code>to_json()</code> を生成します。</p>
+<p class="label">入力 examples/user.c.c</p>
+<pre class="code "><code>type Email = string matches email_format;
+
+schema Address {
+  city: string where len(self) &gt;= 1;
+  zip:  string where len(self) == 7;
+}
+
+schema User {
+  id:      u64         where self &gt; 0;
+  name:    string      where 1 &lt;= len(self) &lt;= 50 transform trim;
+  email:   Email;
+  age:     int?        where 0 &lt;= self &lt;= 150;
+  tags:    vec&lt;string&gt; where len(self) &lt;= 3 = [];
+  address: Address?;
+
+  invariant(age == none || age &gt;= 13, &quot;13歳以上&quot;);
+}</code></pre>
+<h3>フィールドの型</h3>
+<p><code>where</code> / <code>matches</code> の付いたフィールドは、入れ子の条件付き型（<code>User::id_t</code> など）になります。そのため構造体に入っている値は、常に条件を満たしています。</p>
+<pre class="code "><code>  id_t id;
+  name_t name;
+  Email email;
+  std::optional&lt;age_t&gt; age;
+  tags_t tags;
+  std::optional&lt;Address&gt; address;
+
+#line 18 &quot;user.c.c&quot;
+  bool cc_invariant_0() const { return age == std::nullopt || age &gt;= 13; }</code></pre>
+<h3>parse：止めずに全部集める</h3>
+<p>各フィールドを「JSON から取り出す → transform → 条件で検査」の順に処理し、失敗しても <code>errs</code> に積んで次のフィールドへ進みます。全フィールドが揃ってから構造体を組み立て、最後に <code>invariant</code> を検査します。</p>
+<div class="pair">
+  <div><p class="label">1フィールド分（name: transform trim と where）</p><pre class="code "><code>    std::optional&lt;name_t&gt; f_name;
+    if (const auto* v = ::cc::field(j, &quot;name&quot;)) {
+      if (auto d = ::cc::decode&lt;std::string&gt;(*v, ::cc::join(path, &quot;name&quot;), errs)) {
+        *d = ::cc::trim(std::move(*d));
+        f_name = ::cc::refine_into&lt;name_t&gt;(std::move(*d), ::cc::join(path, &quot;name&quot;), errs);
+      }
+    } else {
+      ::cc::missing(::cc::join(path, &quot;name&quot;), errs);
+    }</code></pre></div>
+  <div><p class="label">組み立てと invariant</p><pre class="code "><code>    if (errs.size() != cc_n) return std::nullopt;
+    User out{std::move(*f_id), std::move(*f_name), std::move(*f_email), std::move(f_age), std::move(*f_tags), std::move(f_address)};
+    if (!out.cc_invariant_0()) errs.push_back(::cc::invariant_failure(path, &quot;13歳以上&quot;, &quot;age == none || age &gt;= 13&quot;));
+    if (errs.size() != cc_n) return std::nullopt;
+    return out;
+  }</code></pre></div>
+</div>
+<p>入れ子のスキーマ（<code>address: Address?</code>）は <code>parse_at</code> を再帰的に呼び、パスに <code>address.</code> を付けます。配列の要素は <code>tags[1]</code> のように添字付きになります。</p>
+<h3>実行結果</h3>
+<pre class="code "><code>ok({&quot;address&quot;:null,&quot;age&quot;:30,&quot;email&quot;:&quot;a@example.com&quot;,&quot;id&quot;:1,&quot;name&quot;:&quot;Alice&quot;,&quot;tags&quot;:[]})
+err(User の検証に失敗しました（7 件）
+  - id: self &gt; 0 を満たしていません
+  - name: 1 &lt;= len(self) &lt;= 50 を満たしていません
+  - email: matches email_format を満たしていません
+  - age: 0 &lt;= self &lt;= 150 を満たしていません
+  - tags[1]: 文字列が必要です
+  - address.city: len(self) &gt;= 1 を満たしていません
+  - address.zip: 文字列が必要です)
+err(User の検証に失敗しました（1 件）
+  - (全体): 13歳以上（age == none || age &gt;= 13）)
+err(User の検証に失敗しました（1 件）
+  - (全体): JSON として解釈できません)</code></pre>
+
+<h2 id="effects">6. ステップ4：効果と静的検査</h2>
+<p>関数が呼ぶもの（関数・<code>?</code>・cpp ブロック）が必要とする効果は、その関数が <code>effects(...)</code> で宣言した効果に含まれていなければなりません。検査はトランスパイル時に行い、C++ には <code>noexcept</code> の有無として残るだけです。</p>
+<pre class="code "><code>// Pure apart from throwing: no io here, guaranteed by the signature.
+fn parse_config(string text) -&gt; Config effects(throw) {
+  return Config::parse(parse_json(text))?;
+}
+
+fn load_config(string path) -&gt; Config effects(io, throw) {
+  return parse_config(read_file(path));
+}</code></pre>
+<div class="table-wrap"><table>
+<tr><th>呼ぶもの</th><th>必要な効果</th></tr>
+<tr><td>effects を宣言した関数・組み込み関数・<code>extern fn</code></td><td>宣言された効果</td></tr>
+<tr><td><code>T::parse</code> / <code>T::try_from</code>（生成されたもの）</td><td>なし（純粋）</td></tr>
+<tr><td><code>?</code></td><td><code>throw</code>（失敗すると <code>cc::Failure</code> を送出する）</td></tr>
+<tr><td>effects を省略した関数、宣言のない C++ 関数、関数内の <code>cpp { }</code></td><td><code>unsafe</code>（中身が分からないため）</td></tr>
+<tr><td>メソッド呼び出し <code>x.f()</code></td><td>試作では追跡しない</td></tr>
+</table></div>
+<p><code>where</code> / <code>pre</code> / <code>post</code> / <code>invariant</code> の条件と既定値は、純粋でなければなりません。</p>
+
+<h3>エラーの例</h3>
+<p class="label">効果の不足（tests/errors/effects.c.c）</p>
+<pre class="code "><code>effects.c.c:9:3: エラー: `load` の呼び出しには効果 io, throw が必要ですが、`bad` は effects() しか宣言していません
+  |
+9 |   load(&quot;x&quot;);
+  |   ^^^^^^^^^</code></pre>
+<p class="label">未検証の入力をそのまま渡す（tests/errors/raw.c.c）</p>
+<pre class="code "><code>raw.c.c:4:12: エラー: 未検証の Raw&lt;Json&gt; を User として使えません
+  |
+4 |   register(body);
+  |            ^^^^
+  = 補足: 先に User::parse(...) で検証してください（ここが信頼境界です）</code></pre>
+<p class="label">型の分からない値から条件付きの型への暗黙変換（tests/errors/literal.c.c）</p>
+<pre class="code "><code>literal.c.c:5:11: エラー: i64 型の値を Port に暗黙変換できません
+  |
+5 |   connect(n + 1);
+  |           ^^^^^
+  = 補足: 条件は実行時にしか確かめられないため、Port::try_from(...) で明示的に変換してください
+
+literal.c.c:6:11: エラー: i64 型の値を Port に暗黙変換できません
+  |
+6 |   connect(n);
+  |           ^
+  = 補足: 条件は実行時にしか確かめられないため、Port::try_from(...) で明示的に変換してください</code></pre>
+<p class="label">そのほかの規則（tests/errors/misc.c.c）</p>
+<pre class="code "><code>misc.c.c:2:38: エラー: pre / post は contract fn にだけ書けます
+  |
+2 | fn pure_fn(i64 x) -&gt; i64 effects(io) pre(x &gt; 0) {
+  |                                      ^^^^^^^^^^
+  = 補足: `contract fn pure_fn` と宣言してください
+
+misc.c.c:3:3: エラー: `helper` の呼び出しには効果 unsafe が必要ですが、`pure_fn` は effects(io) しか宣言していません
+  |
+3 |   helper();
+  |   ^^^^^^^^
+  = 補足: `helper` は効果を宣言していないため unsafe 扱いです。`helper` に effects(...) を付けてください
+
+misc.c.c:5:3: エラー: cpp ブロックには効果 unsafe が必要ですが、`pure_fn` は effects(io) しか宣言していません
+  |
+5 |   cpp { std::puts(&quot;hi&quot;); }
+  |   ^^^
+  = 補足: cpp ブロックの中身は検査できないため unsafe 扱いです
+
+misc.c.c:6:11: エラー: `?`（失敗すると例外を送出します）には効果 throw が必要ですが、`pure_fn` は effects(io) しか宣言していません
+  |
+6 |   let y = Foo::bar()?;
+  |           ^^^^^^^^^^^
+
+misc.c.c:6:11: エラー: `Foo::bar` の呼び出しには効果 unsafe が必要ですが、`pure_fn` は effects(io) しか宣言していません
+  |
+6 |   let y = Foo::bar()?;
+  |           ^^^^^^^^^^
+  = 補足: C.C. で宣言されていない関数は unsafe 扱いです
+
+misc.c.c:7:14: エラー: old() は post 条件の中でだけ使えます
+  |
+7 |   return x + old(x);
+  |              ^^^^^^</code></pre>
+
+<h2 id="tests">7. テスト</h2>
+<p><code>cd compiler &amp;&amp; cargo test</code> で、次の5種類をまとめて実行します。期待値は <code>UPDATE=1 cargo test</code> で更新し、差分をレビューします。</p>
+<div class="table-wrap"><table>
+<tr><th>テスト</th><th>対象</th><th>確認すること</th></tr>
+<tr><td><code>snapshot</code></td><td>examples/*.c.c</td><td>生成した C++ が <code>tests/snapshot/*.cpp</code> と一致する</td></tr>
+<tr><td><code>run</code></td><td>examples/*.c.c、tests/run/*.c.c</td><td>g++ でビルド・実行し、終了コード・標準出力・標準エラーが <code>tests/run/expected/*.out</code> と一致する</td></tr>
+<tr><td><code>errors</code></td><td>tests/errors/*.c.c</td><td>トランスパイルが失敗し、エラーメッセージが <code>*.err</code> と一致する</td></tr>
+<tr><td><code>hand</code></td><td>examples/hand/*.cpp</td><td>手書き版（ステップ0）の実行結果</td></tr>
+<tr><td><code>hand_literal_is_checked_at_compile_time</code></td><td>examples/hand/port.cpp</td><td><code>Port::of&lt;0&gt;()</code> がコンパイルエラーになる</td></tr>
+</table></div>
+
+<h2 id="decisions">8. 決めたことと制限</h2>
+<div class="note">
+<p><strong>effects を省略した関数</strong>（CONCEPT.md 未決事項1）：検査せず「何でも可」としました。ただし、効果を宣言した関数から呼ぶには <code>unsafe</code> が必要です。既存コードに少しずつ注釈を足していけます。</p>
+<p><strong>既存 C++ の効果</strong>（未決事項2）：宣言のない C++ 関数は <code>unsafe</code> 扱いです。<code>extern fn f(...) effects(...);</code> で効果を絞れます。</p>
+<p><strong>契約の実行時チェック</strong>（未決事項6）：g++ 13 / clang 18 が C++26 Contracts に未対応なので、自前の <code>cc::violation</code> を使っています。</p>
+<p><strong>スキーマのエラー</strong>（未決事項3）：最初からフィールドのパス付きの構造化データにしました。</p>
+</div>
+<h3>既知の制限</h3>
+<ul>
+<li>対応コンパイラは g++ 13 以降です。clang 18 は libstdc++ 13 の <code>std::expected</code> を使えません。</li>
+<li>スキーマに <code>enum</code> はありません。スキーマ型の値を作る手段は <code>parse</code> か、<code>cpp</code> / <code>extern fn</code> だけです。</li>
+<li>メソッド呼び出しの効果は追跡していません。</li>
+<li><code>matches</code> / <code>transform</code> に使えるのは、組み込み関数か <code>extern fn</code> だけです。</li>
+<li>型推論は最小限です。型が分からない式の誤りは、C++ コンパイラのエラーとして出ます（<code>#line</code> により .c.c の行を指します）。</li>
+<li>未着手：<code>with</code> によるハンドラ差し替え、<code>test</code> ブロック、JSON Schema 出力、Z3 による静的証明、所有と手順（<code>once</code> / <code>fixed</code> / <code>protocol</code>）。</li>
+</ul>
+</main>
+</body>
+</html>
