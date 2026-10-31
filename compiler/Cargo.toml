@@ -3,5 +3,7 @@ name = "ccc"
 version = "0.1.0"
 edition = "2021"
 description = "C.C. (Contract-Centric C++) to C++ transpiler"
+license = "MIT"
+repository = "https://github.com/Coxless/c.c."
 
 [dependencies]
