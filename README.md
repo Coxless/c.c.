@@ -174,7 +174,7 @@ g++ -std=c++23 -Iruntime -Ithird_party out.cpp -o out
 
 | ファイル | 内容 |
 |---|---|
-| [docs/language.md](docs/language.md) | 実装済みの言語機能のリファレンス |
+| [docs/language.md](docs/language.md) | 言語仕様（今の実装が受け付ける言語の定義と、つまずきやすい点） |
 | [CONCEPT.md](CONCEPT.md) | 言語の考え方と、将来の構想 |
 | [PLAN.md](PLAN.md) | 実装計画、進捗、既知の制限 |
 | [docs/limitations-memo.md](docs/limitations-memo.md) | 制限ごとの改善策 |
