@@ -12,6 +12,14 @@
 - Rust（cargo）
 - g++ 13 以降（`std::expected` を使うため。clang 18 + libstdc++ 13 の組み合わせでは `std::expected` が使えません）
 
+ホストに入れずに、[Ubuntu Workshop](https://ubuntu.com/workshop) のコンテナの中で使うこともできます。定義は `.workshop/dev.yaml` にあり、プロジェクトは `/project` にマウントされます。
+
+```sh
+workshop launch            # 初回のみ。cargo と g++ を入れる
+workshop run -- test       # cargo test
+workshop shell             # 以下の「使い方」はこの中で実行する（cd /project）
+```
+
 ## 使い方
 
 ```sh
