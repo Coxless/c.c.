@@ -1,0 +1,15 @@
+exit: abort
+--- stdout
+edge port 8080 workers 4
+Server の検証に失敗しました（4 件）
+  - name: 1 <= len(self) <= 50 を満たしていません
+  - port: 範囲内の整数が必要です
+  - workers: 1 <= self <= 256 を満たしていません
+  - wokers: 未知のフィールドです
+33
+--- stderr
+contract violation: pre「ワーカーが1つ以上ある」
+  条件: workers > 0
+  責任: 呼び出し側  tour.c.c:32  main() → per_worker()
+  契約: tour.c.c:15
+  値:   workers = 0
