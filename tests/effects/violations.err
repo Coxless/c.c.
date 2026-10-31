@@ -1,0 +1,155 @@
+violations.c.c:38:36: エラー: `log_line` の呼び出しには効果 io が必要ですが、`direct` は effects() しか宣言していません
+   |
+38 | [[cc::effects()]] void direct() { log_line(); }
+   |                                    ^
+
+violations.c.c:39:40: エラー: `plain` の呼び出しには効果 unsafe が必要ですが、`undeclared` は effects() しか宣言していません
+   |
+39 | [[cc::effects()]] void undeclared() { plain(); }
+   |                                        ^
+   = 補足: `plain` に効果の宣言がないため unsafe 扱いです。[[cc::effects(...)]] を付けるか、効果の一覧に載っている関数を使ってください
+
+violations.c.c:40:43: エラー: `take` の呼び出しには効果 unsafe が必要ですが、`implicit_ctor` は effects() しか宣言していません
+   |
+40 | [[cc::effects()]] void implicit_ctor() { take(1); }
+   |                                           ^
+   = 補足: `take` に効果の宣言がないため unsafe 扱いです。[[cc::effects(...)]] を付けるか、効果の一覧に載っている関数を使ってください
+
+violations.c.c:40:48: エラー: コンストラクタ `Conv::Conv`には効果 io が必要ですが、`implicit_ctor` は effects() しか宣言していません
+   |
+40 | [[cc::effects()]] void implicit_ctor() { take(1); }
+   |                                                ^
+
+violations.c.c:41:43: エラー: デストラクタ `Widget::~Widget`（スコープの終わりなどで暗黙に呼ばれます）には効果 io が必要ですが、`implicit_dtor` は effects() しか宣言していません
+   |
+41 | [[cc::effects()]] void implicit_dtor() { Widget w; }
+   |                                           ^
+
+violations.c.c:42:49: エラー: `Op::operator+` の呼び出しには効果 io が必要ですが、`op` は effects() しか宣言していません
+   |
+42 | [[cc::effects()]] Op op(Op a, Op b) { return a + b; }
+   |                                                 ^
+
+violations.c.c:43:47: エラー: `tmpl` の呼び出しには効果 io が必要ですが、`template_instance` は effects() しか宣言していません
+   |
+43 | [[cc::effects()]] void template_instance() { tmpl(1); }
+   |                                               ^
+
+violations.c.c:44:46: エラー: `ns::adl` の呼び出しには効果 io が必要ですが、`via_adl` は effects() しか宣言していません
+   |
+44 | [[cc::effects()]] void via_adl() { ns::A a; adl(a); }
+   |                                              ^
+
+violations.c.c:45:39: エラー: `log_line` の呼び出しには効果 io が必要ですが、`via_macro` は effects() しか宣言していません
+   |
+45 | [[cc::effects()]] void via_macro() { VIA_MACRO(); }
+   |                                       ^
+
+violations.c.c:46:53: エラー: `log_line` の呼び出しには効果 io が必要ですが、`in_lambda` は effects() しか宣言していません
+   |
+46 | [[cc::effects()]] void in_lambda() { auto f = [] { log_line(); }; f(); }
+   |                                                     ^
+
+violations.c.c:47:46: エラー: `V::m` の呼び出しには効果 unsafe が必要ですが、`virtual_call` は effects() しか宣言していません
+   |
+47 | [[cc::effects()]] void virtual_call(V& v) { v.m(); }
+   |                                              ^
+   = 補足: 仮想関数は呼び先が実行時に決まるため unsafe 扱いです
+
+violations.c.c:48:53: エラー: 呼び先の分からない呼び出しには効果 unsafe が必要ですが、`pointer_call` は effects() しか宣言していません
+   |
+48 | [[cc::effects()]] void pointer_call(void (*f)()) { f(); }
+   |                                                     ^
+   = 補足: 関数ポインタなどは呼び先が実行時に決まるため unsafe 扱いです
+
+violations.c.c:49:70: エラー: `std::function::operator()` の呼び出しには効果 unsafe が必要ですが、`function_object` は effects() しか宣言していません
+   |
+49 | [[cc::effects()]] void function_object(std::function<void()>& f) { f(); }
+   |                                                                      ^
+   = 補足: `std::function::operator()` に効果の宣言がないため unsafe 扱いです。[[cc::effects(...)]] を付けるか、効果の一覧に載っている関数を使ってください
+
+violations.c.c:50:48: エラー: `new`には効果 alloc が必要ですが、`allocates` は effects() しか宣言していません
+   |
+50 | [[cc::effects()]] void allocates() { int* p = new int(1); delete p; }
+   |                                                ^
+
+violations.c.c:50:60: エラー: `delete`には効果 alloc が必要ですが、`allocates` は effects() しか宣言していません
+   |
+50 | [[cc::effects()]] void allocates() { int* p = new int(1); delete p; }
+   |                                                            ^
+
+violations.c.c:51:36: エラー: `throw` 式には効果 throw が必要ですが、`throws` は effects() しか宣言していません
+   |
+51 | [[cc::effects()]] void throws() { throw 1; }
+   |                                    ^
+
+violations.c.c:52:54: エラー: ポインタの再解釈には効果 unsafe が必要ですが、`reinterprets` は effects() しか宣言していません
+   |
+52 | [[cc::effects()]] void reinterprets(int* p) { (void)reinterpret_cast<long*>(p); }
+   |                                                      ^
+
+violations.c.c:53:53: エラー: `std::vector::push_back` の呼び出しには効果 alloc が必要ですが、`push` は effects() しか宣言していません
+   |
+53 | [[cc::effects()]] void push(std::vector<int>& v) { v.push_back(1); }
+   |                                                     ^
+
+violations.c.c:54:64: エラー: `std::vector::at` の呼び出しには効果 throw が必要ですが、`at_throws` は effects() しか宣言していません
+   |
+54 | [[cc::effects()]] void at_throws(std::vector<int>& v) { (void)v.at(0); }
+   |                                                                ^
+
+violations.c.c:55:57: エラー: コンストラクタ `std::basic_string::basic_string`には効果 alloc が必要ですが、`string_temp` は effects() しか宣言していません
+   |
+55 | [[cc::effects()]] void string_temp() { std::string s = "text"; }
+   |                                                         ^
+
+violations.c.c:56:36: エラー: `cc::print` の呼び出しには効果 io が必要ですが、`prints` は effects() しか宣言していません
+   |
+56 | [[cc::effects()]] void prints() { cc::print("x"); }
+   |                                    ^
+
+violations.c.c:57:50: エラー: `cc::print` の呼び出しには効果 io が必要ですが、`alloc_is_not_io` は effects(alloc) しか宣言していません
+   |
+57 | [[cc::effects(alloc)]] void alloc_is_not_io() { cc::print("x"); }
+   |                                                  ^
+
+violations.c.c:58:57: エラー: `cc::parse_json` の呼び出しには効果 alloc が必要ですが、`must_needs_alloc` は effects(throw) しか宣言していません
+   |
+58 | [[cc::effects(throw)]] void must_needs_alloc() { (void)cc::parse_json("1"); }
+   |                                                         ^
+
+violations.c.c:58:72: エラー: コンストラクタ `std::basic_string::basic_string`には効果 alloc が必要ですが、`must_needs_alloc` は effects(throw) しか宣言していません
+   |
+58 | [[cc::effects(throw)]] void must_needs_alloc() { (void)cc::parse_json("1"); }
+   |                                                                        ^
+
+violations.c.c:62:10: エラー: `has_io` の呼び出しには効果 io が必要ですが、`contracted` は effects() しか宣言していません
+   |
+62 | [[cc::effects()]] int contracted(int x) pre(has_io()) { return x; }
+   |          ^
+
+violations.c.c:66:25: エラー: `log_line` の呼び出しには効果 io が必要ですが、`declared_first` は effects() しか宣言していません
+   |
+66 | void declared_first() { log_line(); }
+   |                         ^
+
+violations.c.c:71:5: エラー: `throw` 式には効果 throw が必要ですが、`not_all_caught` は effects() しか宣言していません
+   |
+71 |     throw 1;
+   |     ^
+
+violations.c.c:78:51: エラー: `take` の呼び出しには効果 unsafe が必要ですが、`annotated_template` は effects() しか宣言していません
+   |
+78 | [[cc::effects()]] void annotated_template(T t) { take(t); }
+   |                                                   ^
+   = 補足: `take` に効果の宣言がないため unsafe 扱いです。[[cc::effects(...)]] を付けるか、効果の一覧に載っている関数を使ってください
+
+violations.c.c:78:56: エラー: コンストラクタ `Conv::Conv`には効果 io が必要ですが、`annotated_template` は effects() しか宣言していません
+   |
+78 | [[cc::effects()]] void annotated_template(T t) { take(t); }
+   |                                                        ^
+
+violations.c.c:85:23: エラー: `log_line` の呼び出しには効果 io が必要ですが、`next` は effects() しか宣言していません
+   |
+85 | int Counter::next() { log_line(); return 1; }
+   |                       ^

@@ -1,757 +1,486 @@
 # C.C. 言語仕様（試作版）
 
-今の `ccc` が実際に受け付ける言語を定めた文書です。将来の構想は [CONCEPT.md](../CONCEPT.md) にあり、ここには書きません。
+今の `ccc` が実際に受け付ける言語を定めた文書です。考え方と将来の構想は [CONCEPT.md](../CONCEPT.md) にあります。
 
-- 対象の環境は Ubuntu 24.04、g++ 13 です
-- 仕様の多くは、実際にプログラムを動かして確かめています。文書と実装が食い違っていたら、今の正解は実装です
+- 対象の環境は Ubuntu 24.04、g++ 13、clang 19 / 20 です
+- 文書と実装が食い違っていたら、今の正解は実装です
 - 互換性は保証しません。構文も挙動も変わる可能性があります
 
-**先に読むとよい節:** [最初のプログラム](#1-最初のプログラム)、[つまずきやすい点](#16-つまずきやすい点)
+**先に読むとよい節:** [最初のプログラム](#1-最初のプログラム)、[つまずきやすい点](#11-つまずきやすい点)
 
 ## 目次
 
 1. [最初のプログラム](#1-最初のプログラム)
-2. [ファイルの構成](#2-ファイルの構成)
-3. [字句](#3-字句)
-4. [型](#4-型)
-5. [宣言](#5-宣言)
-6. [文](#6-文)
-7. [式](#7-式)
-8. [値の契約：条件付きの型](#8-値の契約条件付きの型)
-9. [スキーマと JSON](#9-スキーマと-json)
-10. [関数の契約](#10-関数の契約)
-11. [効果](#11-効果)
-12. [失敗の扱い](#12-失敗の扱い)
-13. [組み込み関数と表示形式](#13-組み込み関数と表示形式)
-14. [テスト](#14-テスト)
-15. [C++ との連携](#15-c-との連携)
-16. [つまずきやすい点](#16-つまずきやすい点)
-17. [コマンドと実行時の挙動](#17-コマンドと実行時の挙動)
-18. [文法](#18-文法)
+2. [C++ との関係](#2-c-との関係)
+3. [条件付きの型：`type`](#3-条件付きの型type)
+4. [スキーマ：`schema`](#4-スキーマschema)
+5. [関数の契約：`pre` と `post`](#5-関数の契約pre-と-post)
+6. [効果：`[[cc::effects]]`](#6-効果cceffects)
+7. [厳格モード](#7-厳格モード)
+8. [テスト：`test`](#8-テストtest)
+9. [拡張付きヘッダー：`.c.h`](#9-拡張付きヘッダーch)
+10. [`<cc/cc.hpp>` のライブラリ](#10-cccchpp-のライブラリ)
+11. [つまずきやすい点](#11-つまずきやすい点)
+12. [`ccc` のコマンドと終了コード](#12-ccc-のコマンドと終了コード)
+13. [文法](#13-文法)
+
+---
 
 ## 1. 最初のプログラム
 
+普通の C++ は、そのまま `.c.c` として動きます。
+
 ```cpp
-type Port = u16 where 1 <= self <= 65535;
+#include <iostream>
 
-schema Server {
-  name: string where 1 <= len(self) <= 50 transform trim;
-  port: Port;
-}
-
-contract fn half(n: i64) -> i64
-  effects()
-  pre(n >= 0, "負でない")
-  post(r: r * 2 <= n)
-{
-  return n / 2;
-}
-
-fn main() -> i32 effects(io) {
-  match Server::parse(parse_json(R"({"name": " web ", "port": 8080})")) {
-    ok(s)  { print(s.name, s.port); }
-    err(e) { eprint(e); }
-  }
-  print(half(10));
-  return 0;
-}
-
-test "half" {
-  expect(half(10) == 5);
+int main() {
+  std::cout << "hello\n";
 }
 ```
 
 ```sh
-ccc run hello.c.c    # web 8080 と 5 を表示する
-ccc test hello.c.c   # test ブロックを実行する
+ccc run hello.c.c
 ```
 
-## 2. ファイルの構成
-
-- 1つのプログラムは1つの `.c.c` ファイルです。`import` やモジュールはありません
-- トップレベルに書けるのは宣言だけです。グローバル変数はありません
-- `type`、`schema`、`enum`、`cpp` は**ソースの順に**有効になるので、使う前に宣言します。`schema A { b: B; }` の後に `schema B` を書くとエラーです
-- 関数は順序に関係なく呼べます。相互再帰もできます
-
-## 3. 字句
-
-| 要素 | 規則 |
-|---|---|
-| コメント | `// 行末まで`、`/* 複数行 */` |
-| 名前 | ASCII の英字か `_` で始まり、英数字と `_` が続く。**日本語の名前は使えない** |
-| 整数 | 10進数のみ。`1_000_000` と書ける。16進数（`0x10`）はない |
-| 小数 | `2.5`、`1e3`、`1.5e-1` |
-| 真偽値 | `true`、`false` |
-| 文字列 | `"..."`。UTF-8 可、途中で改行できない。エスケープは `\n` `\t` `\r` `\0` `\\` `\"` `\'` だけ |
-| 生文字列 | `R"(...)"`、`R"x(...)x"`。複数行も可 |
-
-予約語の扱いは次のとおりです。
-
-- `true`、`false`、`none`、`self` は常にその意味になります
-- `cpp` の直後に `{` があると C++ ブロックになります
-- それ以外のキーワードは場所によって意味が決まります。C++ のキーワードと同じ名前（`class`、`default` など）も変数や関数に使えます
-- `break`、`continue` は構文にありません（[6章](#6-文)）
-
-## 4. 型
-
-| 型 | 内容 | C++ |
-|---|---|---|
-| `i32` `i64` | 符号付き整数。`int` は `i64` の別名 | `int32_t` `int64_t` |
-| `u8` `u16` `u32` `u64` | 符号なし整数 | `uint8_t` など |
-| `f64` | 小数 | `double` |
-| `bool` | 真偽値 | `bool` |
-| `string` | 文字列。`str` は別名 | `std::string` |
-| `vec<T>` | 配列 | `std::vector<T>` |
-| `T?` | 省略可能な値。`none` を取れる | `std::optional<T>` |
-| `Json` | 任意の JSON | `nlohmann::json` |
-| `Raw<T>` | 未検証のデータ。[9章](#9-スキーマと-json) | `cc::Raw<T>` |
-| 名前 | `type`、`schema`、`enum` の型、または C++ の型 | 同名の型 |
-
-`T&` は参照で、**関数の引数にだけ**書けます。戻り値やローカル変数には使えません。
-
-`T::parse` と `T::try_from` の結果の型（成功か失敗か）は、**ソースに書けません**。`let r = T::parse(j);` で受けるか、その場で `match` か `?` を使います。
-
-### 整数の扱い
-
-- `let x = 0;` のように右辺が整数リテラルだけの式なら、`x` は `i64` です。`[1, 2, 3]` は `vec<i64>` です
-- それ以外の演算結果の型は C++ の規則に従います。`u8 + u8` は 32 ビットの `int` になります
-
-### 暗黙の変換
-
-値が変わらない変換だけが暗黙に行われます。次はコンパイルエラーです。
-
-| 例 | 理由 |
-|---|---|
-| `let a: u16 = n;`（`n` は `i64`） | 値が変わりうる |
-| `let a: u64 = n;`（`n` は `i64`） | 符号が変わりうる |
-| `let n: i64 = d;`（`d` は `f64`）、`let f: f64 = n;`（`n` は `i64`） | 値が変わりうる |
-| `a < b`（`a` は `i64`、`b` は `u64`） | 符号付きと符号なしの比較 |
-| `let a: u16 = 70000;` | リテラルが範囲外 |
-
-`let a: u16 = 5;`、`let b: i64 = a;`、`let f: f64 = 5;` は通ります。
-
-**型を変換する構文はありません。** 整数の幅を変えるときは、条件付きの型の `try_from` を通します（[8章](#8-値の契約条件付きの型)）。`i64` から `f64` へ変換する手段は、`cpp { }` か `extern fn` だけです。
-
-## 5. 宣言
+ここに契約を足します。
 
 ```cpp
-type Port  = u16 where 1 <= self <= 65535;     // 条件付きの型
-enum Role { admin, member }                    // 列挙
-schema User { id: u64; }                       // スキーマ
-open schema Event { id: u64; }                 // 未知のフィールドを許すスキーマ
-fn add(a: i64, b: i64) -> i64 effects() { return a + b; }
-contract fn pos(a: i64) -> i64 effects() pre(a > 0) { return a; }
-extern fn sqrt2(a: f64) -> f64 effects();      // C++ の関数
-cpp { /* C++ */ }
-test "名前" { expect(1 + 1 == 2); }
-```
+#include <iostream>
 
-### 関数
+type Percent = i64 where 0 <= self <= 100;
 
-- 引数は `名前: 型` の順で書きます。`T&` は参照渡しで、それ以外はコピーです（スキーマ型もコピーされます）
-- `-> 型` を省略すると値を返しません
-- `effects`、`pre`、`post` の順序は自由です
-- 同じ名前は1つだけ宣言できます。オーバーロードはありません
-- 組み込み関数の名前と基本型の名前は宣言に使えません
-- 戻り値の型を宣言した関数に、`return` せずに終わる経路があるとコンパイルエラーです。`match` の両方の分岐で `return` するのは問題ありません
-- 戻り値を無視してもエラーになりません
-- 本体のない `fn f(...);` は、`extern fn f(...);` と同じ意味になります
+int discounted(int price, Percent off)
+  pre(price >= 0, "価格は負でない")
+  post(r: r <= price)
+{
+  return price - price * off / 100;
+}
 
-### `main`
-
-- 省略できます。ない場合、`ccc test` は動きますが、`ccc run` はリンクエラーになります
-- 引数はなしか `args: vec<string>` だけです。`args` にプログラム名は含まれません
-- 戻り値は、なし、`i32`、`i64` のいずれかです。値は終了コードになり、256 で割った余りが使われます
-- 戻り値の型を省略しても `return 3;` と書けます
-
-### `enum`
-
-```cpp
-enum Role { admin, member }
-
-fn f(r: Role) -> Role effects() {
-  if r == admin { return member; }
-  return Role::admin;
+int main() {
+  std::cout << discounted(200, 25) << "\n";   // 150
+  Percent wrong = 120;                        // コンパイルエラー
 }
 ```
 
-- `Role::admin` はどこでも書けます。`admin` だけで書けるのは、型が分かる場所（比較の相手、型付きの `let`、引数、`return`、既定値）です。`let t = admin;` はエラーです
-- `match` では分岐できません。`if` で比較します
-- `print` すると名前が表示されます
-- 整数との変換はできません
-- スキーマのフィールドには `role: enum { a, b } = a;` と直接書けます
+## 2. C++ との関係
 
-## 6. 文
+- 有効な C++ は有効な C.C. です。拡張の外の文字は1文字も変わりません
+- 変換後のコードは C++23 です。`ccc run` などは g++ に `-std=c++23` を渡します
+- 拡張を使うファイルには、`ccc` が先頭に `#include <cc/cc.hpp>` を足します。拡張を使わないファイルには何も足しません（`#line` だけです）
+- コンパイルエラーと契約違反の報告は `.c.c` の行番号を指します
 
-| 文 | 例 | 補足 |
+### 拡張の判定
+
+語だけでは拡張と判定しません。次の形のときだけです。**同じ名前のマクロ（`#define pre(...)` など）があるファイルでは、その語は拡張になりません。**
+
+| 語 | 拡張になる形 | C++ のままのもの |
 |---|---|---|
-| `let` | `let x = 1;`、`let x: i64 = 1;` | 初期値は必須。**すべての変数は書き換えられる** |
-| 代入 | `x = 1;` `+=` `-=` `*=` `/=` `%=` | 式としては使えない |
-| 式文 | `f(x);` | |
-| `return` | `return;`、`return x;` | |
-| `if` | `if c { } else if d { } else { }` | 条件の `( )` は不要。`{ }` は必須 |
-| `while` | `while c { }` | |
-| `for`（範囲） | `for i in 0..n { }` | `i` は `i64`。`n` は含まない。`n` は毎回評価される |
-| `for`（要素） | `for x in xs { }` | `x` は要素への**参照** |
-| ブロック | `{ }` | スコープを作る |
-| `match` | [12章](#12-失敗の扱い) | 式としては使えない |
-| `try` / `catch` | [12章](#12-失敗の扱い) | |
-| `cpp` | `cpp { ... }` | [15章](#15-c-との連携) |
-| `expect`、`with` | [14章](#14-テスト) | `test` の中だけ |
+| `type` | 名前空間のスコープの宣言の先頭で `type 名前 =` に続き、`;` までに `where` か `matches` がある | `type x = 1;` |
+| `schema` | 同じく `[open] schema 名前 {` に続き、`名前 :` か `invariant(` がある | `schema s{1};`、`schema s{};` |
+| `enum` | スキーマのフィールドの型として参照されている | ほかのすべての `enum` |
+| `pre`、`post` | 関数の宣言子（`)`、`noexcept`、後置の戻り値の型）の直後で、`(...)` の後に `{`、`;`、別の `pre` / `post` が続く。関数の本体の中は対象外 | `int pre(int x);`、`x.pre(1)`、`if (a) pre(b);` |
+| `test` | ファイルのトップレベルの宣言の先頭で `test "文字列" {` | `test::value` |
 
-**ない構文:** `break`、`continue`、`++`、`--`、C 形式の `for`、初期値なしの `let`。ループを途中で抜けるには、条件で制御するか、関数に分けて `return` します。
+コメント、文字列、プリプロセッサの行の中は対象になりません。マクロの定義の中に拡張を書くことはできません。
 
-### スコープ
+### 名前の衝突
 
-- ブロックごとにスコープができます。内側で同じ名前を宣言して隠すのは問題ありません
-- 同じスコープでの再宣言はエラーです。関数の一番外側で、引数と同じ名前を `let` するのもエラーです
+`self`、`where` などが意味を持つのは `type` と `schema` の中だけです。`len`、`trim`、`email_format` は、`where`、`invariant`、`matches`、`transform` の中では `cc::` の関数を指します。
 
-## 7. 式
-
-### 演算子（優先順位の低い順）
-
-| 順位 | 演算子 | 補足 |
-|---|---|---|
-| 1 | `\|\|` | |
-| 2 | `&&` | |
-| 3 | `==` `!=` `<` `<=` `>` `>=` | 連鎖できる |
-| 4 | `+` `-` | |
-| 5 | `*` `/` `%` | 整数の `/` は 0 方向に切り捨て |
-| 6 | `-x` `!x` | 前置 |
-| 7 | `f(x)` `a.b` `a[i]` `x?` | 後置 |
-
-**連鎖する比較:** `1 <= x <= 9` は `1 <= x && x <= 9` と同じです。真ん中の式は、左の比較が真のとき**2回評価**されます。
-
-**ない演算子:** ビット演算（`|` `&` `^` `~` `<<` `>>`）、三項演算子、キャスト。
-
-### その他の式
-
-| 式 | 補足 |
-|---|---|
-| `[a, b]` | 配列。`[]` は型が分かる場所でだけ書ける（`let v: vec<i64> = [];`） |
-| `none` | `T?` の値なし |
-| `a[i]` | `vec`、`string`、`Json` に使える。範囲外は契約違反で停止（[10章](#10-関数の契約)） |
-| `T::parse(j)`、`T::try_from(v)` | 生成された関数 |
-| `Role::admin` | `enum` の値 |
-| `s + t`、`s == t`、`s < t` | 文字列の連結と比較。`"a" + 1` はエラー。数値を文字列に変換する関数はない |
-| `s[i]` | 1 **バイト**を返す |
-| `x == none`、`x == 5` | `T?` の比較。`x + 1` は不可で、`match` で取り出す |
-
-条件の式に `bool` 以外を渡しても、C++ の規則で通ります（`if 1 { }`）。
-
-## 8. 値の契約：条件付きの型
+## 3. 条件付きの型：`type`
 
 ```cpp
-type Port  = u16 where 1 <= self <= 65535;
-type Name  = string where 1 <= len(self) <= 50;
+type Port  = u16    where 1 <= self <= 65535;
 type Email = string matches email_format;
-type Ratio = f64 where 0.0 <= self <= 1.0;
-type Tags  = vec<string> where len(self) <= 3;
 ```
 
-- 元にできるのは、基本型、`Json`、`vec<T>` です
-- `where` か `matches` のどちらかが必須で、両方も書けます
+名前空間のスコープに書きます。関数の中やクラスの中に書くとエラーです。
+
+### 元の型
+
+| 書き方 | C++ の型 |
+|---|---|
+| `i32`、`int32`、`int` | `std::int32_t` |
+| `i64`、`int64` | `std::int64_t` |
+| `u8`、`uint8`、`u16`、`uint16`、`u32`、`uint32`、`u64`、`uint64` | `std::uint8_t` など |
+| `f64`、`double` | `double` |
+| `bool` | `bool` |
+| `string`、`str`、`std::string` | `std::string` |
+| `vec<T>`、`std::vector<T>` | `std::vector<T>` |
+| `Json`、`cc::Json` | `cc::Json` |
 
 ### `where` に書けるもの
 
-リテラル、`self`、`len()`、算術、比較、論理、前置の `-` と `!` だけです。ほかの変数や関数は書けません。それ以外の条件は `matches` か、スキーマの `invariant` に書きます。
-
-`matches` に使えるのは、純粋な組み込み関数（`email_format` など）と、`effects()` を宣言した `extern fn` です。**C.C. で書いた関数は使えません。**
+リテラル、`self`、`len()`、算術、比較、論理だけです（後で SMT ソルバーに渡せる範囲に絞っています）。連鎖比較（`1 <= self <= 9`）が書けます。それ以外の条件は `matches`（`bool f(const T&)` の形の関数）に書きます。
 
 ### 値の作り方
 
-| 書き方 | 検査 | 結果 |
-|---|---|---|
-| `let p: Port = 8080;`（整数か真偽値のリテラル） | コンパイル時 | 条件を満たさないとコンパイルエラー |
-| `f(8080)`、`return 8080;`（リテラル） | コンパイル時 | 同上 |
-| `Port::try_from(n)` | 実行時 | 成功か失敗 |
-| `let w: Port = q;`（`q` も `Port`） | なし | コピー |
+```cpp
+Port a = 8080;                   // リテラル：コンパイル時に検査する
+Port b = 0;                      // ✗ コンパイルエラー
+Port c = n + 1;                  // ✗ コンパイルエラー：コンパイル時に分からない
+auto d = Port::try_from(n + 1);  // 実行時に検査する。std::expected<Port, cc::RefineError>
+```
 
-次は認められません。
-
-| 例 | 結果 |
-|---|---|
-| `let n: Name = "abc";`、`let r: Ratio = 0.5;` | 文字列と小数のリテラルは静的に検査できないのでエラー。`try_from` を使う |
-| `let p: Port = n;`（`n` は `i64`） | エラー。`try_from` を使う |
-| `q = 90;`（代入） | リテラルでもエラー。`q = p;` は可 |
-| `let v: vec<Port> = [80];`、`let p: Port? = 80;` | エラー |
-
-### `try_from` の引数
-
-| 元の型 | 受け取れるもの |
-|---|---|
-| 整数 | 任意の整数と、整数を元にした条件付きの型。**先に範囲を調べる**（`Port::try_from(73616)` は失敗。8080 に切り詰められない）。小数を渡すとコンパイルエラー |
-| `bool` | 真偽値。整数を渡すとコンパイルエラー |
-| `f64` | 小数と整数 |
-| `string` | 文字列 |
-| `vec<T>` | 配列 |
+- リテラルから作れるのは整数、小数、`bool` を元にした型で、`matches` のないものだけです。文字列を元にした型は `try_from` で作ります
+- `try_from` は、受け取った整数が元の型の範囲に収まるかを、変換する前に調べます。`Port::try_from(73616)` は（`u16` にすると 8080 になりますが）失敗します
+- 小数を整数の型の `try_from` に渡すとコンパイルエラーです
 
 ### 値の使い方
 
-元の型に暗黙に変換されるので、普通の値として使えます。`p + 1`、`p == 80`、`p < q`、`let n: i64 = p;`、`len(name)`、`for x in tags`、`tags[0]`、`p.get()` が書けます。演算の結果は元の型の値で、条件はもう保証されません。
-
-## 9. スキーマと JSON
+元の型へは暗黙に変換できるので、普通の値として読めます。`get()` でも取り出せます。`==` はリテラルとも比べられ、`<<` で出力できます。
 
 ```cpp
+Port p = 8080;
+int n = p + 1;
+if (p == 8080) std::cout << p;
+```
+
+## 4. スキーマ：`schema`
+
+```cpp
+enum Role { admin, member };
+
 schema User {
-  id:    u64         where self > 0;
-  name:  string      where 1 <= len(self) <= 50 transform trim;
+  id:    u64                    where self > 0;
+  name:  string                 where 1 <= len(self) <= 50
+                                transform trim;
   email: Email;
-  role:  enum { admin, member } = member;
-  age:   int?        where 0 <= self <= 150;
-  tags:  vec<string> where len(self) <= 3 = [];
+  age:   int32?                 where 0 <= self <= 150;
+  role:  Role = member;
+  tags:  vec<string>            where len(self) <= 10 = [];
 
   invariant(role != admin || age >= 18, "管理者は18歳以上");
 }
 ```
 
-スキーマ1つから、構造体、`User::parse()`、`to_json()` が生成されます。**値を作る方法は `parse` だけです**（ほかは `cpp { }` か `extern fn`）。`User { id: 1 }` のような構文はありません。
+末尾の `;` はあってもなくても構いません。
 
 ### フィールド
 
-`名前: 型` の後に、次を任意の順で書けます。
+```
+名前: 型 [where 条件] [matches 関数] [transform 関数] [= 既定値];
+```
 
-| 句 | 意味 |
+| 要素 | 意味 |
 |---|---|
-| `where 式` | 条件。`self` はフィールドの値。`T?` なら中身の値 |
-| `matches f` | 述語関数による条件 |
-| `transform f` | 検査の前に値を変換する。組み込みでは `trim` が使える |
-| `= 式` | 既定値。キーがないか `null` のときに使う |
+| 型 | `type` の元の型、`T?`（または `std::optional<T>`）、ほかのスキーマや `type`、`enum`、`enum { a, b }` |
+| `where`、`matches` | 条件。フィールド専用の入れ子のクラス（`User::id_t`）になる |
+| `transform` | 検査の前に値を変換する関数（`T f(T)`）。スキーマ型には使えない |
+| `= 既定値` | 値がないときに使う。`[]`、`[a, b]`、リテラル、`enum` の値など。条件も検査される |
 
-### `parse` の処理順
+`T?` のフィールドは、なければ `std::nullopt` になります。JSON の `null` は「ない」と同じ扱いです。
 
-1. 入力が JSON オブジェクトか確かめます。解釈できない JSON も、ここでエラーになります
-2. フィールドを宣言順に処理します。各フィールドは、デコード → `transform` → `where` / `matches` の順です
-3. スキーマにないキーをエラーにします（`open schema` なら無視します）
-4. ここまでにエラーがなければ、すべての `invariant` を評価します
+`enum { a, b }` は `<スキーマ名>_<フィールド名>` という名前の `enum class` になります。
 
-エラーは止まらずに**全件**集めます。パスは `addrs[1].city` のように示され、スキーマ全体のエラーは `(全体)` と表示されます。
+### 生成されるもの
 
-### JSON からの変換
-
-| 型 | 受け付ける値 |
+| 生成物 | 内容 |
 |---|---|
-| 整数 | JSON の整数で、型の範囲に収まるもの。`1.0` や `1.5` はエラー |
-| `f64` | 数値 |
-| `bool` | `true` / `false` のみ。`1` はエラー |
-| `string` | 文字列 |
-| `enum` | 値の名前と完全に一致する文字列 |
-| `vec<T>` | 配列 |
-| `T?` | 中身の値、または `null` か省略 |
-| スキーマ | オブジェクト |
-| `Json` | 何でも。ただし `null` は省略扱いなので、`Json?` と書く |
+| `struct User` | フィールドを持つ構造体 |
+| `User::parse(const cc::Json&)`、`User::parse(const cc::Raw<cc::Json>&)` | `std::expected<User, cc::ParseError>` を返す |
+| `User::make({...})` | プログラムの中の値から作る。`parse` と同じ検査を通す |
+| `to_json()` | `cc::Json` への変換 |
+
+```cpp
+auto u = User::make({.id = 1, .name = " Alice ", .email = "a@example.com"});
+```
+
+`make` の引数は指示付き初期化で、宣言の順に書きます。書かなかったフィールドは既定値が使われ、既定値がなければ必須フィールドのエラーになります。
+
+### エラー
+
+`cc::ParseError` は、壊れたフィールドを**全件**、パス付きで持ちます（`upstreams[1].port` など）。宣言の順に並び、未知のフィールドは最後に来ます。`to_string()` で文章にできます。
+
+| 種類 | 文面 |
+|---|---|
+| 必須フィールドがない | `必須フィールドがありません` |
+| 型が違う | `整数が必要です` など |
+| 条件を満たさない | `1 <= self を満たしていません` |
+| スキーマにないフィールド | `未知のフィールドです`。無視するなら `open schema` と宣言する |
+| `invariant` | 説明の文字列と条件。すべてのフィールドが正しいときだけ検査する |
+| JSON でない | `(全体): JSON として解釈できません` |
 
 ### `invariant`
 
-- `invariant(条件);` または `invariant(条件, "説明");` と書きます
-- フィールドは名前だけで参照します。`effects()` を宣言した C.C. の関数を呼べます（宣言の順序は問いません）
-- `T?` のフィールドは比較できます。値がないときの結果は `std::optional` の規則に従います。`age >= 18` は false、`age < 18` は **true** です。`age == none || ...` のように明示するのが安全です
+```
+invariant(条件 [, "説明"]);
+```
 
-### 既定値
+`invariant` の式は C++ の一部です。比較（連鎖も可）、算術、論理、関数の呼び出し、`.`、`[]`、`::` が書けます。フィールドは名前で、`enum` の値は `admin` のように書けます。`none` は `std::nullopt` です。呼び出す関数はスキーマより前に宣言します。
 
-- 純粋でなければなりません
-- `where` / `matches` は既定値にも適用されます。満たさない場合は `parse` のエラーとして報告されます
-- 名前付きの整数の型（`p: Port = 0;`）のリテラルは、コンパイル時に検査されます
-- `transform` は既定値には適用されません
+**`invariant` を持つスキーマのフィールドは `const` です。** `u.age = 3;` はコンパイルエラーで、外から作る手段は `parse` と `make` だけです。値全体の代入（`a = b;`）はできます。
 
-### `to_json`
+`invariant` のないスキーマは普通の構造体です。`Plain p{5, "text"};` のように作れ、フィールドにも代入できます。条件付きのフィールドは、自分の型が値を守ります。
 
-`s.to_json()` は `Json` を返します。キーはアルファベット順で、値のない `T?` は `null` になります。
+### `enum`
 
-### `Raw<T>`：信頼境界
-
-`parse_json(text)` は `Raw<Json>` を返します。これは検証前のデータで、スキーマ型や `Json` として渡すとコンパイルエラーです。
+スキーマから参照された `enum` と `enum class` は、宣言はそのままで、JSON の文字列との対応が足されます。値（`a = 5`）を指定した `enum` はエラーです。同じファイルで宣言された `enum` だけが対象で、ほかのものは次の関数を自分で書きます。
 
 ```cpp
-fn handle(body: Raw<Json>) effects(io, throw) {
-  let user = User::parse(body)?;   // ここで検証する
-  greet(user);
-  // greet(body);                  // エラー: 未検証の Raw<Json> を User として使えません
+inline std::vector<std::string_view> cc_enum_names(Role) { return {"admin", "member"}; }
+```
+
+### `cc::Raw<T>`：信頼境界
+
+`cc::parse_json` は `cc::Raw<cc::Json>` を返します。`Raw` のままでは検証済みの型として使えず、C++ のコンパイルエラーになります。
+
+```cpp
+void handle(cc::Raw<cc::Json> body) {
+  User user = cc::must(User::parse(body));   // ここが信頼境界
 }
 ```
 
-- `Raw<T>` は引数と `let` に使えます。スキーマのフィールドには書けません
-- `parse` は `Json` も受け取ります
-- `Json` として読むには `.unchecked()` を呼びます。C++ のメソッドなので `unsafe` が必要です
-
-`Json` は `j["a"]`、`j["a"][1]` で読めます。ないキーは `null` になり、範囲外の添字は停止します。
-
-## 10. 関数の契約
+## 5. 関数の契約：`pre` と `post`
 
 ```cpp
-contract fn withdraw(a: Account&, amt: i64) -> i64
-  effects(log)
-  pre(amt > 0, "金額は正")
+std::int64_t withdraw(Account& a, std::int64_t amt)
+  pre(amt > 0,          "金額は正")
   pre(a.balance >= amt, "残高が足りる")
   post(r: r == amt)
-  post(a.balance == old(a.balance) - amt, "残高が amt だけ減る")
+  post(a.balance == old(a.balance) - amt)
 {
   a.balance -= amt;
-  log("withdraw", amt);
   return amt;
 }
 ```
 
-- `pre` / `post` は `contract fn` にだけ書けます。どちらも書かない `contract fn` も認められます
-- 説明の文字列は省略できます。省略すると条件の式が表示されます
-- `pre` は関数の先頭で、書いた順に評価されます
-- `post` は `return` のたびに（戻り値なしなら本体の末尾でも）、書いた順に評価されます。例外で抜けるときは評価されません
-- `post(r: ...)` の `r` は戻り値です。名前は自由です
-- `old(式)` は `post` の中だけで使えます。関数の入口で値をコピーします
-- `post` で引数を読むと、**書き換えた後の値**になります。入口の値は `old()` で読みます
-- 条件は純粋でなければなりません（[11章](#11-効果)）
+```
+pre(条件 [, "説明"])
+post([結果の名前:] 条件 [, "説明"])
+```
+
+- 条件は C++ の式です（連鎖比較は書けません）
+- `old(式)` は `post` の中で使え、関数に入ったときの値です
+- `post` から見える値渡しの引数は、呼び出されたときの値です。本体が書き換えても変わりません
+- `post` は関数が値を返したときに検査します。例外で抜けたときは検査しません
 
 ### 違反の報告
-
-| 違反 | 責任 | 報告の位置 |
-|---|---|---|
-| `pre` | 呼び出し側 | 呼び出した行と、契約の行 |
-| `post` | 実装側 | 契約の行と、呼び出した行 |
-| `v[i]` の範囲外 | 呼び出し側 | 添字を使った行 |
 
 ```
 contract violation: pre「残高が足りる」
   条件: a.balance >= amt
-  責任: 呼び出し側  withdraw.c.c:35  pay() → withdraw()
-  契約: withdraw.c.c:11
+  責任: 呼び出し側  withdraw.c.c:32  pay() → withdraw()
+  契約: withdraw.c.c:13
   値:   a.balance = 200, amt = 500
 ```
 
-### モード
+`pre` の違反は呼び出し側、`post` の違反は実装側の責任として報告します。報告の後で `abort` します。`cc::contract_mode` で変えられます。
 
-| モード | 指定 | 挙動 |
-|---|---|---|
-| enforce（既定） | | 報告して停止する |
-| observe | `-DCC_CONTRACTS_OBSERVE` または `cc::contract_mode = cc::Mode::observe;` | 報告して続行する |
-| off | `-DCC_CONTRACTS_OFF` | 条件は評価するが、報告しない |
-
-`ccc run` には C++ のオプションを渡せません。`-D` を使うには `ccc build` の後に自分で g++ を実行します。`v[i]` の範囲外は、どのモードでも停止します。
-
-## 11. 効果
-
-```cpp
-fn pure_add(a: i64, b: i64) -> i64 effects() { return a + b; }
-fn load(p: string) -> string effects(io, throw) { return read_file(p); }
-```
-
-**規則:** 関数の中で呼ぶものの効果は、その関数が宣言した効果に含まれていなければなりません。違反はコンパイルエラーです。
-
-| 効果 | 必要になるもの |
+| 値 | 動作 |
 |---|---|
-| `io` | `print`、`eprint`、`read_file` |
-| `throw` | `?`、`read_file` |
-| `log` | `log` |
-| `unsafe` | 効果が分からないもの（下の表） |
-| `alloc` `async` `nondet` | 組み込み機能では使わない。宣言すると呼び出し元に伝わる |
+| `cc::Mode::enforce`（既定） | 報告して止まる |
+| `cc::Mode::observe` | 報告して続ける。`-DCC_CONTRACTS_OBSERVE` でも選べる |
+| `cc::Mode::off` | 報告しない。`-DCC_CONTRACTS_OFF` でも選べる。条件の式は評価される |
 
-`unsafe` が必要になるものは次のとおりです。
+### 書ける場所
 
-| 呼び出すもの | 例 |
+名前空間のスコープにある、普通の関数の**定義**です。次はエラーになります。
+
+| 書いたもの | 理由 |
 |---|---|
-| `effects(...)` を省略した関数 | |
-| 宣言していない C++ の関数 | `foo(1)`、`Foo::bar(1)` |
-| C++ のメソッド | `v.push_back(1)`、`s.size()` |
-| 関数の中の `cpp { }` | |
+| `template`、メンバ関数、演算子、`requires` | まだ対応していない |
+| 可変長引数、`consteval` | まだ対応していない |
+| 宣言だけの関数（本体がない） | 定義に書く |
+| 名前のない引数 | 外側の関数から渡せない |
+| `auto` の戻り値（後置の型なし） | 型を書く |
+| `main` | 呼び出し側がいない |
 
-例外として、型が分かっているスキーマ値の `to_json()` と、条件付きの型の `get()` は純粋です。
+### 生成されるもの
 
-### 補足
+関数は「元の本体」（`cc_impl_withdraw`）と「検査して呼び出す外側の関数」（`withdraw`）に分かれます。呼び出し位置を受け取る隠し引数が末尾に付くので、**関数ポインタの型は変わります。** 同じ引数の宣言が先にあると、呼び出しが曖昧になってコンパイルエラーになります。
 
-- **`effects(...)` を省略した関数は検査されず、何でもできます。** ただし、効果を宣言した関数から呼ぶには `unsafe` が必要です。`test` ブロックも検査されません
-- `throw` を宣言していない関数は `noexcept` になります。`unsafe` な C++ から例外が出ると、プログラムは異常終了します
-- `try` の中の `throw` は外に伝わりません（[12章](#12-失敗の扱い)）
-- `where`、`pre`、`post`、`invariant`、既定値は純粋でなければなりません
-- 未知の効果名はエラーです
-- `v[i]` の範囲外や整数オーバーフローは、効果として追跡しません
-- `extern fn` の効果の宣言は信用するだけで、検証しません
-
-## 12. 失敗の扱い
-
-`T::parse` と `T::try_from` の結果は、成功か失敗のどちらかです。そのまま `T` として渡すとエラーになります。
-
-### `match`
+## 6. 効果：`[[cc::effects]]`
 
 ```cpp
-match User::parse(body) {       // ok / err の両方が必須
-  ok(user) { greet(user); }
-  err(e)   { eprint(e); }
-}
+[[cc::effects()]]                 // 純粋
+int add(int a, int b) { return a + b; }
 
-match user.age {                // T? は some / none の両方が必須
-  some(age) { print(age); }
-  none      { print("年齢なし"); }
-}
+[[cc::effects(io, throw)]]
+std::string load(const std::string& path);
 ```
 
-- 分岐できるのは、この2種類だけです。分岐の漏れや重複はエラーです
-- `err(e)` の `e` は `print` / `eprint` で表示します
+**呼び出す関数の効果は、呼び出し元が宣言した効果に含まれていなければなりません。** 検査するのは `ccc check` だけで、Clang（19 以降）を使います。`ccc build` と `ccc run` は検査しません。
 
-### `?`
-
-```cpp
-let user = User::parse(body)?;
-return Port::try_from(n)?;
-Port::try_from(n)?;
-```
-
-- 失敗すると例外を送出します。**`throw` の効果が必要です**
-- 書けるのは、`let` の右辺、`return` の値、式文の末尾だけです。`print(f()?)` は書けません
-- 使えるのは `parse` / `try_from` の結果だけです。`T?` には使えません
-- `main` まで届くと、`エラー: メッセージ` を表示して終了コード 1 で終わります
-
-### `try` / `catch`
-
-```cpp
-try {
-  let text = read_file(path);
-} catch message {             // message は string
-  eprint(message);
-}
-```
-
-- `try` の中の `throw` は外に伝わらないので、呼び出し元に `throw` は要りません
-- 捕まえるのは `std::exception` の派生だけです。契約違反の停止は捕まえられません
-- 自分で例外を送出する構文（`throw 式`）はありません
-- `try` の中で宣言した変数は、`catch` からは見えません
-
-## 13. 組み込み関数と表示形式
-
-| 関数 | 効果 | 内容 |
-|---|---|---|
-| `print(...)` | `io` | 標準出力へ。空白区切りで、最後に改行 |
-| `eprint(...)` | `io` | 標準エラーへ |
-| `log(...)` | `log` | 標準エラーへ。先頭に `[log]` |
-| `len(x) -> i64` | なし | 文字列、配列、条件付きの型の長さ。**文字列はバイト数**（`len("日本語")` は 9） |
-| `trim(s) -> string` | なし | 前後の空白（スペース、タブ、改行）を除く |
-| `email_format(s) -> bool` | なし | `@` が1つ、ドメインに `.` があるかの簡単な検査 |
-| `parse_json(s) -> Raw<Json>` | なし | 例外は出さない。不正な JSON は `parse` のエラーになる |
-| `read_file(path) -> string` | `io`、`throw` | 読めないと失敗を送出する |
-
-### `print` の表示
-
-| 値 | 表示 |
+| 効果 | 意味 |
 |---|---|
-| 文字列 | そのまま |
-| `true` / `false` | `true` / `false` |
-| 整数、小数 | `5`、`1.5`。`3.0` は `3` |
-| `vec` | `[1, 2]`。中の文字列は引用符付き（`["a"]`） |
-| `T?` | 中身か `none` |
-| `enum` | 名前 |
-| スキーマ | JSON |
-| `parse` / `try_from` の結果 | `ok(...)` / `err(...)` |
-| 検証エラー | 件数とエラーの一覧 |
+| `io` | ファイル、ネットワーク、標準入出力。`alloc` を含む |
+| `alloc` | ヒープ確保。`std::bad_alloc` は `throw` に数えない |
+| `throw` | 例外の送出 |
+| `async` | コルーチンによる中断 |
+| `unsafe` | 生ポインタ、未定義動作の可能性、呼び先の分からない呼び出し |
+| `nondet` | 時刻、乱数 |
+| `log` | ログ出力 |
 
-## 14. テスト
+### 規則
+
+`[[cc::effects(...)]]` を付けた関数の本体だけを検査します。**注釈のない関数は普通の C++ で、何でもできます。** 注釈は宣言に付ければ定義にも効きます。テンプレートは実体ごとに、ラムダの本体は書いた関数の一部として検査します。`pre` / `post` の条件も関数の一部です。
+
+| 呼び先 | 必要な効果 |
+|---|---|
+| `[[cc::effects(...)]]` のある関数 | 宣言されたもの |
+| 効果の一覧（[effect_table.rs](../compiler/src/effect_table.rs)）にある関数 | 一覧のもの |
+| 生成された関数と `cc::` の関数 | ライブラリの宣言。`parse`、`make`、`to_json` は `alloc`、`try_from` は何も要らない |
+| 注釈のない関数、一覧にない関数 | `unsafe` |
+| 自明なコンストラクタとデストラクタ | 何も要らない |
+| 仮想関数、関数ポインタ、`std::function` | `unsafe` |
+| `throw` 式 | `throw`。`catch (...)` のある `try` の中なら不要 |
+| `new`、`delete` | `alloc` |
+| `reinterpret_cast`、値を読み替える C キャスト、インラインアセンブリ | `unsafe` |
+| `co_await`、`co_yield`、`co_return` | `async` |
+
+コンパイル時に評価されるもの（`constexpr` の変数、`consteval` の呼び出し）は数えません。
+
+### ハンドラ
+
+`cc::read_file` は差し替えられます。テストのときに便利です。`fopen` の直接呼び出しは差し替わりません（効果の検査では `unsafe` として見つかります）。
 
 ```cpp
-fn load() -> string effects(io, throw) { return read_file("a.json"); }
+cc::MemoryFs fs{{"app.json", R"({"port": 8080})"}};
+cc::WithIo io{fs};            // このスコープの間だけ
+```
 
-test "ファイルを差し替える" {
-  with io = MemoryFs{ {"a.json", "{}"} } {
-    expect(load() == "{}");
-  }
+## 7. 厳格モード
+
+既定では C++ の挙動を変えません。`#pragma cc strict` と書くと、それより後で次が有効になります。
+
+| 検査 | 実現方法 |
+|---|---|
+| 値が変わる暗黙の変換、符号付きと符号なしの比較 | `-Wconversion`、`-Wsign-conversion`、`-Wsign-compare`、`-Woverflow` をエラーにする |
+| `return` のない経路 | `-Wreturn-type` をエラーにする |
+| `v[i]` の範囲外 | `_GLIBCXX_ASSERTIONS` を定義する。ファイル全体に効く |
+
+`#pragma cc strict` の前にインクルードしたヘッダーのコードには、警告の扱いは適用されません。生成されたコードにも適用されません。
+
+`ccc run` と `ccc test` は厳格モードに関係なく UBSan を有効にしてビルドし、オーバーフローやゼロ除算で止まります。
+
+## 8. テスト：`test`
+
+```cpp
+test "設定を読める" {
+  cc::MemoryFs fs{{"app.json", R"({"port": 8080})"}};
+  cc::WithIo io{fs};
+  expect(load_config().port == 8080);
 }
 ```
 
-- `ccc test` で実行します。`ccc run` では無視されます
-- 各テストは別のプロセスで動きます（POSIX 専用）。契約違反で止まっても、残りのテストは実行されます
-- `expect(条件);` は `test` の中に、文として書きます。外れても続きを実行し、失敗として数えます。条件の中の値も表示します
-- 例外が外に出ると、そのテストは失敗です
-- 1件でも失敗すると終了コードは 1 です
-- 1ファイルずつの実行で、テストの絞り込みはできません
+- ファイルのトップレベルに書きます。中身は普通の C++ です
+- `expect(条件);` は、外れると条件と値を表示して、続きを実行します。テストは失敗になります
+- テストごとに別プロセスで動くので、契約違反で止まっても残りのテストは実行されます
+- 例外が漏れるとテストの失敗として報告します
+- `ccc run` と `ccc build` の出力をそのままビルドした場合、テストは含まれません（`-DCC_TEST` を付けたときだけ）
 
-### `with`
+`ccc test` のとき、テストはファイルの最後の静的初期化の中で実行されるので、`main` は呼ばれません。
 
-- `with io = MemoryFs{ {"パス", "中身"}, ... } { ... }` だけが使えます。`test` の中でのみ書けます
-- 差し替わるのは `read_file` だけです。`print` は本物のまま出力されます
-- 登録していないパスは、ファイルがないときと同じ失敗になります
-
-### 出力の例
-
-```
-test 通る
-  ok
-test 落ちる
-  expect 失敗: x == 2  (tests.c.c:4)
-    x = 1
-  FAILED
-2 件中 1 件成功
-```
-
-## 15. C++ との連携
-
-### `cpp { }`
+## 9. 拡張付きヘッダー：`.c.h`
 
 ```cpp
-cpp {
-#include <cmath>
-struct Account { std::int64_t balance; };
-inline double root(double a) { return std::sqrt(a); }
-}
-extern fn root(a: f64) -> f64 effects();
-
-fn main() effects(io, unsafe) {
-  let i = 3;
-  cpp { i = i + 1; }       // 関数の中では unsafe が必要。ローカル変数が見える
-  print(i, root(16.0));
-}
+#include "shared.c.h"
 ```
 
-- トップレベルの `cpp` はソースの順に出力され、関数の宣言より前に置かれます。**中から C.C. の関数は呼べません**
-- 中身は検査しません。暗黙の変換の禁止なども適用されません
+`.c.h` は `.c.c` と同じように拡張を書けるヘッダーです。`ccc` が `.h` に変換します。
 
-### `extern fn`
+- `#include "...c.h"` の形だけが対象です。パスは含むファイルからの相対で、`<...>` は対象外です
+- 実行のたびに変換するので、古い結果が残りません
+- 変換先の名前は `shared.h` のようにファイル名だけになります。同じ名前の `.c.h` を一緒に使うとエラーです
+- `ccc build` は出力先のディレクトリに `.h` を書きます。`ccc` が作ったものでない同名のファイルがあれば、上書きせずにエラーにします
+- `test` と `#pragma cc strict` は `.c.h` には書けません
+- 関数の定義を書くときは、C++ と同じく `inline` を付けます。`#pragma once` なども自分で書きます
 
-- C++ の関数を、効果を付けて宣言します。本体は書けません
-- 関数は `cpp { }` の中に定義します。`ccc run` に別のソースやライブラリを渡す方法はありません
-- 引数の個数は検査します。効果の宣言は信用します
-- `extern contract fn` に書いた **`pre` / `post` は検査されません**（[16章](#16-つまずきやすい点)）
+`ccc build` の出力を別のディレクトリでビルドするときは、元のディレクトリを `-iquote` で渡すと、普通の `#include "x.h"` も見つかります。`ccc run` などは自動で渡します。
 
-### C++ の型
+## 10. `<cc/cc.hpp>` のライブラリ
 
-`let a: Account = ...` のように、宣言していない型名はそのまま C++ に渡ります。`std::string` のような `::` を含む名前は書けないので、`cpp` の中で別名を付けます。
+拡張の外では `cc::` を付けて使います。
 
-### 生成される C++
-
-`ccc build` で確認できます。
-
-| C.C. | C++ |
+| 名前 | 内容 |
 |---|---|
-| 関数 | `namespace cc_user` の中の関数 |
-| `main` | `cc_user::cc_main` と、それを呼ぶ `main` |
-| C++ のキーワードと同じ名前 | 末尾に `_`（`class` → `class_`） |
-| `a[i]` | `::cc::at(a, i)` |
-| `contract fn` | 呼び出し位置を受け取る隠し引数の付いた関数 |
+| `cc::i8` 〜 `cc::u64`、`cc::f64`、`cc::string`、`cc::vec<T>` | 型の別名 |
+| `cc::must(r)` | `std::expected` の値を取り出す。失敗なら `cc::Failure` を送出する |
+| `cc::parse_json(text)` | `cc::Raw<cc::Json>` を返す |
+| `cc::read_file(path)` | ファイルを読む。失敗なら `cc::Failure`。差し替え可 |
+| `cc::print(...)`、`cc::eprint(...)` | 空白で区切って標準出力、標準エラーへ。`expected`、`optional`、`vector`、スキーマも表示する |
+| `cc::log(...)` | `[log]` を付けて標準エラーへ |
+| `cc::len(x)`、`cc::trim(s)`、`cc::email_format(s)` | `where`、`transform`、`matches` で使う関数 |
+| `cc::MemoryFs`、`cc::WithIo` | ハンドラ |
+| `cc::repr(x)`、`cc::display(x)` | 値を文字列にする |
+| `cc::Raw<T>`、`cc::Json`、`cc::ParseError`、`cc::RefineError`、`cc::Failure` | 型 |
+| `cc::contract_mode` | 契約違反の動作 |
 
-## 16. つまずきやすい点
+`CC_PRE`、`CC_POST`、`CC_V` は、`ccc` を使わずに同じ報告を出すマクロです（[examples/hand/withdraw.cpp](../examples/hand/withdraw.cpp)）。
 
-### 書けないこと
+## 11. つまずきやすい点
 
-| やりたいこと | 今の書き方 |
-|---|---|
-| ループを抜ける | `break` はない。`while` の条件か、関数に分けて `return` |
-| 構造体の値を作る | `parse` か、`cpp { }` / `extern fn` |
-| `vec` に追加する | `v.push_back(x)` と `effects(..., unsafe)` |
-| 整数の幅を変える | 条件付きの型の `try_from` |
-| 数値を文字列にする | 手段がない。`print` に並べて渡す |
-| `parse` の結果を返す関数 | 型が書けない。`?` で `T` にして返す |
-| `enum` で分岐する | `if` で比較する |
+**`Port p = n;` がコンパイルできない。** リテラル以外は、条件を満たすかコンパイル時に分かりません。`Port::try_from(n)` を使います。
 
-### 意図と違う動きをしやすいこと
+**文字列を元にした型にリテラルを代入できない。** `Name n = "a";` はコンパイルエラーです。`Name::try_from("a")` を使います。
 
-| 挙動 | 説明 |
-|---|---|
-| `len` はバイト数 | `where len(self) <= 50` は50文字ではなく50バイト |
-| `for x in xs` の `x` は参照 | `x = 9;` で配列の中身が変わる |
-| 連鎖比較は真ん中を2回評価することがある | `1 < f() < 9` は、`1 < f()` が真なら `f` をもう一度呼ぶ |
-| 値のない `T?` の比較 | `age < 18` は true になる |
-| `let x = none;` | 型が定まらず、`print` は `<?>` を表示する |
+**`invariant` のあるスキーマのフィールドに代入できない。** 仕様です。`make` で作り直して値全体を代入します。
 
-### 契約が効かない場所（既知の穴）
+**`invariant` から呼ぶ関数が見つからない。** スキーマより前に宣言します。
 
-| 挙動 | 説明 |
-|---|---|
-| **フィールドへの代入は `invariant` を通らない** | `invariant(n > 0)` があっても `s.n = -5;` は通る。`where` のあるフィールドへの代入はコンパイルエラーになる |
-| **`extern contract fn` の `pre` / `post`** | エラーにならず、検査もされない |
-| `cpp { }` と `extern fn` | 中身は検査できない |
-| `ccc build` の出力を UBSan なしでビルドする | オーバーフローとゼロ除算が検出されない |
+**`effects()` の関数で `std::string` を作るとエラーになる。** 確保は `alloc` です。`std::string_view` を使うか、`effects(alloc)` と宣言します。
 
-### エラーメッセージの見分け方
+**`effects()` の関数から注釈のない関数を呼ぶとエラーになる。** `unsafe` 扱いです。呼ぶ関数に注釈を付けます。
 
-| 形式 | 出どころ |
-|---|---|
-| `file:行:列: エラー: 日本語の文` と `^^^` | `ccc` 自身の検査 |
-| `file:行: エラー: 英語の文` | C++ コンパイラ。型の誤り、未定義の名前など。**行が少しずれることがある**。全文は `CC_VERBOSE=1` |
-| `file:行:列: runtime error:` | 実行時の UBSan。列番号は生成コードのものなので、行だけ見る |
+**`ccc run` で効果のエラーが出ない。** 効果を検査するのは `ccc check` だけです。
 
-## 17. コマンドと実行時の挙動
+**関数ポインタに入れられない。** `pre` / `post` のある関数は隠し引数を持ちます。ラムダで包みます。
+
+**`pre` が拡張として扱われない。** 同じファイルに `#define pre` があるか、関数の本体の中です。
+
+**`v[i]` が範囲外でも止まらない。** `#pragma cc strict` を書きます。
+
+## 12. `ccc` のコマンドと終了コード
 
 ```sh
-ccc run   file.c.c [-- 引数...]    # 変換・ビルドして実行する
-ccc test  file.c.c                 # test ブロックを実行する
-ccc check file.c.c                 # 実行ファイルは残さずに、C++ のコンパイルまで検査する（test も含む）
-ccc build file.c.c [-o out.cpp]    # C++ に変換する。C++ コンパイラは動かさない
+ccc run   file.c.c [-- 引数...]
+ccc test  file.c.c
+ccc check file.c.c
+ccc build file.c.c [-o out.cpp]
 ```
 
-| 環境変数 | 内容 |
+| 状況 | 終了コード |
 |---|---|
-| `CXX` | C++ コンパイラ（既定: `g++`） |
-| `CC_HOME` | `runtime/` と `third_party/` のあるディレクトリ（既定: ビルドしたときのリポジトリ） |
-| `CC_VERBOSE` | C++ コンパイラの出力を省略せずに表示する |
+| 成功 | 0 |
+| `ccc` のエラー、C++ コンパイラのエラー、効果のエラー | 1 |
+| `ccc run` のプログラムの終了 | プログラムの終了コード |
+| シグナルでの終了 | 128 + シグナル番号。契約違反は 134 |
+| `ccc test` | すべて成功なら 0、失敗があれば 1 |
 
-`ccc run` と `ccc test` は UBSan を有効にしてビルドします。`ccc build` の出力を自分でビルドするときは、次のようにします。
+C++ コンパイラのエラーは、`.c.c` の行と `error:` の文だけを表示します。候補の一覧などを含む全文は `CC_VERBOSE=1` で見られます。
 
-```sh
-g++ -std=c++23 -Iruntime -Ithird_party -fsanitize=undefined -fno-sanitize-recover=undefined out.cpp -o out
+## 13. 文法
+
+C++ の部分は C++ の文法のとおりです。拡張だけを示します。
+
+```
+type-decl    = "type" name "=" field-type { "where" expr | "matches" name } ";"
+
+schema-decl  = [ "open" ] "schema" name "{" { field | invariant } "}" [ ";" ]
+field        = name ":" field-type { "where" expr | "matches" name | "transform" name | "=" expr } ";"
+invariant    = "invariant" "(" expr [ "," string ] ")" ";"
+field-type   = path [ "<" field-type ">" ] { "?" }
+             | "enum" "{" name { "," name } [ "," ] "}"
+path         = name { "::" name }
+
+contract     = { "pre" "(" c++-expr [ "," string ] ")"
+               | "post" "(" [ name ":" ] c++-expr [ "," string ] ")" }
+
+test-decl    = "test" string c++-compound-statement
+
+effects-attr = "cc" "::" "effects" "(" [ effect { "," effect } ] ")"     (* [[ ]] の中 *)
+
+expr         = or
+or           = and { "||" and }
+and          = compare { "&&" compare }
+compare      = add { ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) add }
+add          = mul { ( "+" | "-" ) mul }
+mul          = unary { ( "*" | "/" | "%" ) unary }
+unary        = ( "-" | "!" ) unary | postfix
+postfix      = primary { "(" args ")" | "." name | "[" expr "]" }
+primary      = number | string | "true" | "false" | "none" | "self"
+             | path | "[" args "]" | "(" expr ")"
 ```
 
-### 実行時に止まる場合
-
-| 原因 | 表示 | 終了コード |
-|---|---|---|
-| `main` の `return` | | その値（256 の余り） |
-| `?` などの例外が `main` まで届く | `エラー: メッセージ` | 1 |
-| 整数オーバーフロー、ゼロ除算 | `runtime error: ...` | 1 |
-| 契約違反、`v[i]` の範囲外 | `contract violation: ...` | 134 |
-| その他のシグナル | `プログラムが異常終了しました（シグナル N）` | 128 + N |
-
-C.C. の検査やビルドの失敗は、終了コード 1 です。
-
-## 18. 文法
-
-`compiler/src/parser.rs` から起こしたものです。`{ x }` は0回以上、`[ x ]` は省略可能を表します。
-
-```ebnf
-program     = { item } ;
-item        = CPP_BLOCK | type_decl | enum_decl | schema_decl | test_decl | fn_decl ;
-
-type_decl   = "type" NAME "=" type { "where" expr | "matches" NAME } ";" ;
-enum_decl   = "enum" NAME "{" [ NAME { "," NAME } [ "," ] ] "}" ;
-schema_decl = [ "open" ] "schema" NAME "{" { field | invariant } "}" ;
-field       = NAME ":" type { "where" expr | "matches" NAME | "transform" NAME | "=" expr } ";" ;
-invariant   = "invariant" "(" expr [ "," STRING ] ")" ";" ;
-test_decl   = "test" STRING block ;
-fn_decl     = [ "extern" ] [ "contract" ] "fn" NAME "(" [ params ] ")" [ "->" type ]
-              { clause } ( ";" | block ) ;
-params      = param { "," param } [ "," ] ;
-param       = NAME ":" type [ "&" ] ;
-clause      = "effects" "(" [ NAME { "," NAME } [ "," ] ] ")"
-            | "pre" "(" expr [ "," STRING ] ")"
-            | "post" "(" [ NAME ":" ] expr [ "," STRING ] ")" ;
-
-type        = base_type { "?" } ;
-base_type   = "vec" "<" type ">" | "Raw" "<" type ">" | "Json"
-            | "enum" "{" [ NAME { "," NAME } [ "," ] ] "}"   (* フィールドだけ *)
-            | NAME ;                                         (* 基本型を含む *)
-
-block       = "{" { stmt } "}" ;
-stmt        = CPP_BLOCK | block
-            | "let" NAME [ ":" type ] "=" expr ";"
-            | "return" [ expr ] ";"
-            | if_stmt
-            | "for" NAME "in" expr [ ".." expr ] block
-            | "while" expr block
-            | "match" expr "{" { arm } "}"
-            | "try" block "catch" NAME block
-            | "with" NAME "=" NAME "{" [ entry { "," entry } [ "," ] ] "}" block   (* test の中だけ *)
-            | "expect" "(" expr ")" ";"                                            (* test の中だけ *)
-            | expr [ ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" ) expr ] ";" ;
-if_stmt     = "if" expr block [ "else" ( if_stmt | block ) ] ;
-arm         = ( "ok" | "err" | "some" ) "(" NAME ")" block | "none" block ;
-entry       = "{" expr "," expr "}" ;
-
-expr        = or ;
-or          = and { "||" and } ;
-and         = cmp { "&&" cmp } ;
-cmp         = add { ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) add } ;
-add         = mul { ( "+" | "-" ) mul } ;
-mul         = unary { ( "*" | "/" | "%" ) unary } ;
-unary       = ( "-" | "!" ) unary | postfix ;
-postfix     = primary { "(" [ list ] ")" | "." NAME | "[" expr "]" | "?" } ;
-primary     = INT | FLOAT | STRING | "true" | "false" | "none" | "self"
-            | NAME [ "::" NAME ]
-            | "(" expr ")" | "[" [ list ] "]" ;
-list        = expr { "," expr } [ "," ] ;
-```
-
-文法上は書けても、検査で拒否されるものがあります（`self` は `where` の中だけ、`old()` は `post` の中だけ、など）。
+`where` では、`primary` のうちリテラルと `self`、呼び出しのうち `len(...)` だけが使えます。

@@ -1,5 +1,5 @@
-// Step 0: the target shape for `type Port = u16 where 1 <= self <= 65535;`
-// (CONCEPT.md 11), written by hand.
+// What `type Port = u16 where 1 <= self <= 65535;` stands for (CONCEPT.md 11), written
+// by hand: cc.hpp is an ordinary library, and this file is plain C++.
 #include <cc/cc.hpp>
 
 class Port {
@@ -10,7 +10,7 @@ class Port {
 
   static constexpr std::expected<Port, cc::RefineError> try_from(std::uint16_t v) {
     if (!check(v)) return std::unexpected(cc::RefineError{"Port", "1 <= self <= 65535"});
-    return Port(v);
+    return Port(cc::Unchecked{}, v);
   }
 
   // Any other integer is range-checked first: as a u16, 73616 would wrap to 8080 and pass.
@@ -27,27 +27,30 @@ class Port {
   static void try_from(const A&) = delete;
 
   // Literals: the condition is checked at compile time and no runtime check is left.
-  template <std::uint16_t V>
-    requires(check(V))
-  static consteval Port of() {
-    return Port(V);
+  template <cc::plain_integer A>
+  consteval Port(A v) : v_(static_cast<std::uint16_t>(v)) {
+    if (!cc::fits<std::uint16_t>(v) || !check(static_cast<std::uint16_t>(v))) cc::literal_rejected();
   }
 
   constexpr const std::uint16_t& get() const { return v_; }
   constexpr operator const std::uint16_t&() const { return v_; }
   friend constexpr bool operator==(const Port&, const Port&) = default;
   friend constexpr auto operator<=>(const Port&, const Port&) = default;
+  template <cc::plain_integer A>
+  friend constexpr bool operator==(const Port& a, A b) {
+    return std::cmp_equal(a.v_, b);
+  }
 
  private:
-  explicit constexpr Port(std::uint16_t v) : v_(v) {}
+  constexpr Port(cc::Unchecked, std::uint16_t v) : v_(v) {}
   std::uint16_t v_;
 };
 
 int main() {
-  constexpr Port http = Port::of<8080>();
+  constexpr Port http = 8080;
   static_assert(http.get() == 8080);
 #ifdef CC_EXPECT_COMPILE_ERROR
-  Port::of<0>();  // 0 does not satisfy 1 <= self: rejected at compile time
+  Port bad = 0;  // 0 does not satisfy 1 <= self: rejected at compile time
 #endif
   cc::print("literal:", http);
   cc::print("try_from(443):", Port::try_from(443));

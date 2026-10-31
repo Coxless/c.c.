@@ -1,5 +1,5 @@
-//! Tokenizer. `cpp { ... }` bodies are captured verbatim here so the parser
-//! never has to look at C++.
+//! Tokenizer for the inside of `type` and `schema` declarations. The scanner in
+//! `scan.rs` finds where those declarations are; this only ever sees their text.
 
 use crate::ast::Span;
 use crate::diag::Diag;
@@ -14,8 +14,6 @@ pub enum Tok {
         lit: String,
         value: String,
     },
-    /// Body of a `cpp { ... }` block, without the outer braces.
-    Cpp(String),
     Punct(&'static str),
     Eof,
 }
@@ -31,8 +29,10 @@ const PUNCTS: &[&str] = &[
     "<", ">", ",", ";", ":", ".", "?", "=", "+", "-", "*", "/", "%", "!", "&",
 ];
 
-pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
-    Lexer { src, b: src.as_bytes(), pos: 0, out: Vec::new() }.run()
+/// Tokens of `src[lo..hi]`. Their spans are positions in the whole of `src`.
+pub fn lex(src: &str, lo: usize, hi: usize) -> Result<Vec<Token>, Diag> {
+    let src = &src[..hi];
+    Lexer { src, b: src.as_bytes(), pos: lo, out: Vec::new() }.run()
 }
 
 struct Lexer<'a> {
@@ -69,12 +69,7 @@ impl<'a> Lexer<'a> {
                     self.pos += 1;
                 }
                 let word = &self.src[lo..self.pos];
-                if word == "cpp" && self.at_brace_after_space() {
-                    let code = self.cpp_block(lo)?;
-                    self.push(Tok::Cpp(code), lo);
-                } else {
-                    self.push(Tok::Ident(word.to_string()), lo);
-                }
+                self.push(Tok::Ident(word.to_string()), lo);
             } else if c.is_ascii_digit() {
                 self.number(lo);
             } else if c == b'"' {
@@ -111,19 +106,23 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn at_brace_after_space(&self) -> bool {
-        self.src[self.pos..].trim_start().starts_with('{')
-    }
-
     fn number(&mut self, lo: usize) {
-        while self.peek(0).is_ascii_digit() || self.peek(0) == b'_' {
+        if self.peek(0) == b'0' && matches!(self.peek(1), b'x' | b'X' | b'b' | b'B') {
+            self.pos += 2;
+            while self.peek(0).is_ascii_hexdigit() || self.peek(0) == b'\'' {
+                self.pos += 1;
+            }
+            let text = self.src[lo..self.pos].to_string();
+            return self.push(Tok::Int(text), lo);
+        }
+        while self.peek(0).is_ascii_digit() || self.peek(0) == b'\'' {
             self.pos += 1;
         }
         let mut float = false;
         if self.peek(0) == b'.' && self.peek(1).is_ascii_digit() {
             float = true;
             self.pos += 1;
-            while self.peek(0).is_ascii_digit() || self.peek(0) == b'_' {
+            while self.peek(0).is_ascii_digit() || self.peek(0) == b'\'' {
                 self.pos += 1;
             }
         }
@@ -136,7 +135,7 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
             }
         }
-        let text = self.src[lo..self.pos].replace('_', "");
+        let text = self.src[lo..self.pos].to_string();
         self.push(if float { Tok::Float(text) } else { Tok::Int(text) }, lo);
     }
 
@@ -192,50 +191,5 @@ impl<'a> Lexer<'a> {
         let value = self.src[body_lo..body_lo + end].to_string();
         self.pos = body_lo + end + close.len();
         Ok((self.src[start..self.pos].to_string(), value))
-    }
-
-    /// Captures the inside of `cpp { ... }`, matching braces while skipping
-    /// C++ strings, character literals and comments.
-    fn cpp_block(&mut self, lo: usize) -> Result<String, Diag> {
-        self.pos = self.src[self.pos..].find('{').unwrap() + self.pos + 1;
-        let body_lo = self.pos;
-        let mut depth = 1;
-        while depth > 0 {
-            match (self.peek(0), self.peek(1)) {
-                (0, _) => return Err(Diag::new(Span { lo, hi: lo + 3 }, "cpp ブロックの { が閉じていません")),
-                (b'/', b'/') => {
-                    while !matches!(self.peek(0), b'\n' | 0) {
-                        self.pos += 1;
-                    }
-                }
-                (b'/', b'*') => {
-                    self.pos = self.src[self.pos + 2..].find("*/").map_or(self.b.len(), |i| self.pos + i + 4);
-                }
-                (b'R', b'"') => {
-                    self.pos += 1;
-                    self.raw_string(lo)?;
-                }
-                (q @ (b'"' | b'\''), _) => {
-                    self.pos += 1;
-                    while !matches!(self.peek(0), 0 | b'\n') && self.peek(0) != q {
-                        if self.peek(0) == b'\\' {
-                            self.pos += 1;
-                        }
-                        self.pos += 1;
-                    }
-                    self.pos += 1;
-                }
-                (b'{', _) => {
-                    depth += 1;
-                    self.pos += 1;
-                }
-                (b'}', _) => {
-                    depth -= 1;
-                    self.pos += 1;
-                }
-                _ => self.pos += 1,
-            }
-        }
-        Ok(self.src[body_lo..self.pos - 1].to_string())
     }
 }

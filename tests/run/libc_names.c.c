@@ -1,35 +1,15 @@
-// Functions named like C library functions are still this file's functions,
-// and their contracts are still checked.
-fn div(a: i64, b: i64) -> i64 effects() {
-  return a / b;
-}
+// A function may share its name with the C library, as in C++: this is an overload.
+#include <cc/cc.hpp>
 
-fn rand() -> i64 effects() {
-  return 4;
-}
+#include <cstdlib>
 
-contract fn abs(a: i64) -> i64
-  effects()
-  pre(a != 0, "0 以外")
+std::int64_t abs(std::int64_t a, std::int64_t b)
+  pre(b != 0)
 {
-  return 42;
+  return (a < 0 ? -a : a) / b;
 }
 
-schema S {
-  n: i64;
-  invariant(abs(n) == 42, "自作の abs を呼ぶ");
-}
-
-fn main() -> i32 effects(io) {
-  let x: i32 = 6;
-  let y: i32 = 3;
-  print(div(x, y), div(6, 3), rand());
-  match S::parse(parse_json(R"({"n": 1})")) {
-    ok(s) { print("invariant ok"); }
-    err(e) { print(e); }
-  }
-  print(abs(-1));
-  print(abs(0));
-  print("届かない");
-  return 0;
+int main() {
+  cc::print(abs(-6, 2));
+  cc::print(abs(-1));
 }

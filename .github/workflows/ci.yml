@@ -18,9 +18,13 @@ jobs:
         working-directory: compiler
     steps:
       - uses: actions/checkout@v4
+      # The effect check needs Clang 19 or later to read libstdc++ 13's std::expected.
+      - name: Install Clang
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-20
       - name: Show tool versions
         run: |
           g++ --version
+          clang++-20 --version
           cargo --version
       - name: Add rustfmt and clippy
         run: rustup component add rustfmt clippy

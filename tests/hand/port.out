@@ -1,6 +1,0 @@
-exit: 0
---- stdout
-literal: 8080
-try_from(443): ok(443)
-try_from(0): err(Port の条件 1 <= self <= 65535 を満たしていません)
---- stderr

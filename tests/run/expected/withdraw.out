@@ -6,12 +6,12 @@ paid 500 balance -300
 [log] withdraw 100
 contract violation: pre「残高が足りる」
   条件: a.balance >= amt
-  責任: 呼び出し側  withdraw.c.c:35  pay() → withdraw()
-  契約: withdraw.c.c:11
+  責任: 呼び出し側  withdraw.c.c:32  pay() → withdraw()
+  契約: withdraw.c.c:13
   値:   a.balance = 200, amt = 500
 [log] withdraw 500
 contract violation: post「残高が amt だけ減る」
   条件: a.balance == old(a.balance) - amt
-  責任: 実装側  withdraw.c.c:23  withdraw_buggy()
-  呼び出し元: withdraw.c.c:44  main()
+  責任: 実装側  withdraw.c.c:25  withdraw_buggy()
+  呼び出し元: withdraw.c.c:41  main()
   値:   a.balance = -400, old(a.balance) = -300, amt = 50

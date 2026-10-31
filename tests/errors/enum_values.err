@@ -1,0 +1,5 @@
+enum_values.c.c:1:12: エラー: スキーマで使う enum `Level` には値を指定できません
+  |
+1 | enum class Level { low = 1, high = 2 };
+  |            ^^^^^
+  = 補足: JSON との対応に値の順番を使います

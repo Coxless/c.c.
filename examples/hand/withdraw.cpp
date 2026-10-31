@@ -1,6 +1,6 @@
-// Step 0: function contracts with blame, written by hand.
+// Function contracts with blame, written by hand with the macros of cc.hpp: plain C++.
 //
-//   contract fn withdraw(Account& a, i64 amt) -> i64
+//   std::int64_t withdraw(Account& a, std::int64_t amt)
 //     pre(amt > 0, "金額は正")
 //     pre(a.balance >= amt, "残高が足りる")
 //     post(r: r == amt)

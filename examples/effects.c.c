@@ -1,23 +1,32 @@
-// Step 4: effects. A function may only call functions whose effects it
-// declares. `?` throws on failure, so it needs `throw`.
+// Effects: what a function may do is in its signature, and `ccc check` holds it to that.
+#include <cc/cc.hpp>
+
+#include <string>
+
+[[cc::effects()]]
+int add(int a, int b) {
+  return a + b;
+}
+
 schema Config {
-  port: u16    where 1 <= self <= 65535;
-  host: string = "localhost";
+  port: i64 where 1 <= self <= 65535;
 }
 
-// Pure apart from throwing: no io here, guaranteed by the signature.
-fn parse_config(text: string) -> Config effects(throw) {
-  return Config::parse(parse_json(text))?;
+[[cc::effects(io, throw)]]
+Config load_config() {
+  return cc::must(Config::parse(cc::parse_json(cc::read_file("app.json"))));
 }
 
-fn load_config(path: string) -> Config effects(io, throw) {
-  return parse_config(read_file(path));
+// Handlers replace what the function reads, so the same code runs in tests without a mock library.
+test "設定を読める" {
+  cc::MemoryFs fs{{"app.json", R"({"port": 8080})"}};
+  cc::WithIo io{fs};
+  expect(load_config().port == 8080);
+  expect(add(1, 2) == 3);
 }
 
-fn main() -> i32 effects(io, throw) {
-  let c = parse_config(R"({"port": 8080})");
-  print("port", c.port, "host", c.host);
-  let missing = load_config("does-not-exist.json");
-  print("ここには来ない", missing.port);
+[[cc::effects(io)]]
+int main() {
+  cc::print(add(1, 2));
   return 0;
 }

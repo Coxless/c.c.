@@ -1,0 +1,5 @@
+exit: abort
+--- stdout
+30
+--- stderr
+/usr/include/c++/13/bits/stl_vector.h:1128: constexpr std::vector<_Tp, _Alloc>::reference std::vector<_Tp, _Alloc>::operator[](size_type) [with _Tp = int; _Alloc = std::allocator<int>; reference = int&; size_type = long unsigned int]: Assertion '__n < this->size()' failed.

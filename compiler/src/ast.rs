@@ -1,4 +1,5 @@
-//! Syntax tree of a .c.c file.
+//! Syntax tree of the extensions in a .c.c file: `type`, `schema`, and the enums schemas use.
+//! Everything else in the file is C++, which `ccc` does not parse.
 
 /// Byte range in the source file.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,13 +30,13 @@ pub enum Prim {
 impl Prim {
     pub fn from_name(name: &str) -> Option<Prim> {
         Some(match name {
-            "i32" => Prim::I32,
-            "i64" | "int" => Prim::I64,
-            "u8" => Prim::U8,
-            "u16" => Prim::U16,
-            "u32" => Prim::U32,
-            "u64" => Prim::U64,
-            "f64" => Prim::F64,
+            "i32" | "int32" | "int" => Prim::I32,
+            "i64" | "int64" => Prim::I64,
+            "u8" | "uint8" => Prim::U8,
+            "u16" | "uint16" => Prim::U16,
+            "u32" | "uint32" => Prim::U32,
+            "u64" | "uint64" => Prim::U64,
+            "f64" | "double" => Prim::F64,
             "bool" => Prim::Bool,
             "string" | "str" => Prim::String,
             _ => return None,
@@ -56,8 +57,6 @@ pub enum TypeKind {
     Vec(Box<Type>),
     Raw(Box<Type>),
     Optional(Box<Type>),
-    /// Value of `T::parse` / `T::try_from`: success type and error type. Not writable in source.
-    Result(Box<Type>, Box<Type>),
 }
 
 #[derive(Clone, Debug)]
@@ -112,118 +111,21 @@ pub enum ExprKind {
     List(Vec<Expr>),
     Ident(String),
     SelfValue,
-    /// `Type::member`
+    /// `a::b::member`, split at the last `::`.
     Path(String, String),
     Field(Box<Expr>, String),
     Index(Box<Expr>, Box<Expr>),
-    /// Callee is an `Ident` (function), `Path` (static member) or `Field` (method).
+    /// Callee is an `Ident` (function), `Path` (qualified function) or `Field` (method).
     Call(Box<Expr>, Vec<Expr>),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     /// `a < b <= c` keeps every operand once; emitted as `a < b && b <= c`.
     Compare(Box<Expr>, Vec<(CmpOp, Expr)>),
-    Old(Box<Expr>),
-    Try(Box<Expr>),
 }
 
 #[derive(Clone, Debug)]
 pub struct Expr {
     pub kind: ExprKind,
-    pub span: Span,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AssignOp {
-    Set,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Rem,
-}
-
-#[derive(Clone, Debug)]
-pub enum ForIter {
-    Range(Expr, Expr),
-    Each(Expr),
-}
-
-#[derive(Clone, Debug)]
-pub enum StmtKind {
-    Let {
-        name: String,
-        ty: Option<Type>,
-        init: Expr,
-    },
-    Assign {
-        target: Expr,
-        op: AssignOp,
-        value: Expr,
-    },
-    Expr(Expr),
-    Return(Option<Expr>),
-    If {
-        cond: Expr,
-        then: Block,
-        els: Option<Block>,
-    },
-    For {
-        var: String,
-        iter: ForIter,
-        body: Block,
-    },
-    While {
-        cond: Expr,
-        body: Block,
-    },
-    Block(Block),
-    Cpp(String),
-    Match {
-        subject: Expr,
-        arms: Vec<MatchArm>,
-    },
-    Try {
-        body: Block,
-        var: Name,
-        handler: Block,
-    },
-    /// `with io = MemoryFs{ {path, text}, ... } { ... }`, only inside `test`.
-    With {
-        effect: Name,
-        handler: Name,
-        entries: Vec<(Expr, Expr)>,
-        body: Block,
-    },
-    /// `expect(cond);`, only inside `test`.
-    Expect(Expr),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ArmKind {
-    Ok,
-    Err,
-    Some,
-    None,
-}
-
-#[derive(Clone, Debug)]
-pub struct MatchArm {
-    pub kind: ArmKind,
-    /// `None` only for the `none` arm.
-    pub binder: Option<Name>,
-    pub body: Block,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug)]
-pub struct Stmt {
-    pub kind: StmtKind,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug)]
-pub struct Block {
-    pub stmts: Vec<Stmt>,
     pub span: Span,
 }
 
@@ -263,14 +165,6 @@ pub struct Clause {
 }
 
 #[derive(Clone, Debug)]
-pub struct PostClause {
-    pub binder: Option<Name>,
-    pub cond: Expr,
-    pub label: Option<String>,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug)]
 pub struct SchemaDecl {
     /// `open schema`: unknown JSON fields are ignored instead of rejected.
     pub open: bool,
@@ -287,50 +181,4 @@ pub struct EnumDecl {
     pub name: Name,
     pub variants: Vec<Name>,
     pub span: Span,
-}
-
-/// `test "label" { ... }`. The body is held as an ordinary function without
-/// declared effects, so it is checked and emitted the same way.
-#[derive(Clone, Debug)]
-pub struct TestDecl {
-    pub label: String,
-    pub func: FnDecl,
-}
-
-/// `name: T` or `name: T&`
-#[derive(Clone, Debug)]
-pub struct Param {
-    pub name: Name,
-    pub ty: Type,
-    pub by_ref: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct FnDecl {
-    pub name: Name,
-    pub is_contract: bool,
-    pub params: Vec<Param>,
-    pub ret: Option<Type>,
-    /// `None` when `effects(...)` is omitted.
-    pub effects: Option<Vec<Name>>,
-    pub pres: Vec<Clause>,
-    pub posts: Vec<PostClause>,
-    /// `None` for a declaration of a function implemented in C++.
-    pub body: Option<Block>,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug)]
-pub enum Item {
-    Type(TypeDecl),
-    Schema(SchemaDecl),
-    Enum(EnumDecl),
-    Fn(FnDecl),
-    Test(TestDecl),
-    Cpp { code: String, span: Span },
-}
-
-#[derive(Clone, Debug)]
-pub struct Program {
-    pub items: Vec<Item>,
 }

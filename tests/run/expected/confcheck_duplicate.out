@@ -2,4 +2,4 @@ exit: 1
 --- stdout
 --- stderr
 Server の検証に失敗しました（1 件）
-  - (全体): upstreams の host と port の組が重複している（!has_duplicate(upstreams)）
+  - (全体): upstreams の host と port の組が重複している（!has_duplicate(upstreams.get())）

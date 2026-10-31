@@ -3,9 +3,9 @@ exit: 1
 test 通る
   ok
 test expect が外れても続きを実行する
-  expect 失敗: n == 4  (failing.c.c:21)
+  expect 失敗: n == 4  (failing.c.c:30)
     n = 3
-  expect 失敗: n == 5  (failing.c.c:22)
+  expect 失敗: n == 5  (failing.c.c:31)
     n = 3
 最後まで来た
   FAILED
@@ -15,13 +15,16 @@ test 送出された失敗
   例外: Id の検証に失敗しました（1 件）
   - id: 必須フィールドがありません
   FAILED
-test ハンドラはブロックの外に漏れない
+test std::exception ではない値
+  例外: std::exception の派生ではない値が送出されました
+  FAILED
+test ハンドラはスコープの外に漏れない
   例外: ファイルを開けません: a
   FAILED
-5 件中 1 件成功
+6 件中 1 件成功
 --- stderr
 contract violation: pre「偶数」
   条件: x % 2 == 0
-  責任: 呼び出し側  failing.c.c:27  test() → half()
-  契約: failing.c.c:3
+  責任: 呼び出し側  failing.c.c:36  test() → half()
+  契約: failing.c.c:7
   値:   x = 3

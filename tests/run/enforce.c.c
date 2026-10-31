@@ -1,12 +1,16 @@
-// Default mode is enforce: the first violation aborts the program.
-contract fn half(x: i64) -> i64 effects()
+// The default mode is enforce: the first violation stops the program.
+#include <cc/cc.hpp>
+
+#include <iostream>
+
+std::int64_t half(std::int64_t x)
   pre(x % 2 == 0, "偶数")
 {
   return x / 2;
 }
 
-fn main() effects(io) {
-  print(half(4));
-  print(half(3));
-  print("ここには来ない");
+int main() {
+  std::cout << half(4) << std::endl;
+  std::cout << half(3) << std::endl;
+  std::cout << "ここには来ない" << std::endl;
 }

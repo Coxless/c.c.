@@ -1,10 +1,12 @@
-//! Golden tests over files in the repository:
+//! Tests over files in the repository:
 //!
-//! - snapshot: examples/*.c.c and tests/snapshot/*.c.c -> tests/snapshot/<name>.cpp
+//! - compat:   examples/hand/*.cpp and tests/compat/*.cpp: `ccc` leaves them alone and they behave the same
+//! - snapshot: examples/*.c.c -> tests/snapshot/<name>.cpp
 //! - run:      examples/*.c.c and tests/run/*.c.c, built with g++ and run -> tests/run/expected/<name>.out
 //! - errors:   tests/errors/*.c.c -> tests/errors/<name>.err
-//! - hand:     examples/hand/*.cpp (step 0), built and run -> tests/hand/<name>.out
 //! - tests:    examples/confcheck.c.c and tests/test/*.c.c, built with CC_TEST and run -> tests/test/expected/<name>.out
+//! - effects:  `ccc check` on tests/effects, under Clang
+//! - headers:  tests/headers, a .c.c file with the .c.h files it includes
 //!
 //! Run with UPDATE=1 to rewrite the expected files.
 
@@ -51,21 +53,26 @@ fn compile_file(p: &Path) -> Result<String, String> {
 fn cxx_build(cpp: &Path, exe: &Path, extra: &[&str]) -> Result<(), String> {
     let r = root();
     let out = Command::new(std::env::var("CXX").unwrap_or("g++".into()))
-        .args(["-std=c++23", "-Wall", "-Wno-type-limits"])
+        .args(["-std=c++23", "-Wall", "-Werror=return-type"])
         .args(ccc::cxx::SANITIZE_FLAGS)
         .arg(format!("-I{}", r.join("runtime").display()))
-        .arg(format!("-I{}", r.join("third_party").display()))
+        .arg(format!("-isystem{}", r.join("third_party").display()))
         .args(extra)
         .arg(cpp)
         .arg("-o")
         .arg(exe)
+        .env("LC_ALL", "C")
         .output()
         .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(format!("{}: C++ のビルドに失敗\n{}", cpp.display(), String::from_utf8_lossy(&out.stderr)))
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        return Err(format!("{}: C++ のビルドに失敗\n{stderr}", cpp.display()));
     }
+    // Generated code is held to -Wall, so it never adds warnings to a user's build.
+    if stderr.contains("warning:") {
+        return Err(format!("{}: C++ の警告\n{stderr}", cpp.display()));
+    }
+    Ok(())
 }
 
 fn run_exe(exe: &Path) -> String {
@@ -97,10 +104,36 @@ fn each(inputs: Vec<PathBuf>, f: impl Fn(&Path) -> Result<(), String> + Sync) {
     assert!(errors.is_empty(), "\n{}", errors.join("\n\n"));
 }
 
+/// C++ renamed to .c.c is untouched, line for line, and does what it did.
+#[test]
+fn compat() {
+    let dir = tmp_dir("compat");
+    let inputs = [files("examples/hand", ".cpp"), files("tests/compat", ".cpp")].concat();
+    each(inputs, |p| {
+        let text = std::fs::read_to_string(p).unwrap();
+        let name = format!("{}.c.c", stem(p));
+        let cpp = ccc::compile(&name, &text)?;
+        if !cpp.ends_with(&text) {
+            return Err(format!("{}: C++ の部分が変わりました\n{cpp}", p.display()));
+        }
+        let direct = dir.join(format!("direct_{}", stem(p)));
+        let through = dir.join(format!("through_{}", stem(p)));
+        let through_cpp = dir.join(format!("through_{}.cpp", stem(p)));
+        std::fs::write(&through_cpp, cpp).unwrap();
+        cxx_build(p, &direct, &[])?;
+        cxx_build(&through_cpp, &through, &[])?;
+        let (a, b) = (run_exe(&direct), run_exe(&through));
+        let normalize = |s: &str| s.replace(&format!("{}.cpp", stem(p)), "FILE").replace(&name, "FILE");
+        if normalize(&a) != normalize(&b) {
+            return Err(format!("{}: 結果が変わりました\n--- 元\n{a}\n--- ccc\n{b}", p.display()));
+        }
+        Ok(())
+    });
+}
+
 #[test]
 fn snapshot() {
-    let inputs = [files("examples", ".c.c"), files("tests/snapshot", ".c.c")].concat();
-    each(inputs, |p| {
+    each(files("examples", ".c.c"), |p| {
         let cpp = compile_file(p)?;
         expect(&root().join("tests/snapshot").join(format!("{}.cpp", stem(p))), &cpp)
     });
@@ -144,7 +177,9 @@ fn confcheck_cli() {
 #[test]
 fn test_blocks() {
     let dir = tmp_dir("tests");
-    let inputs = [vec![root().join("examples/confcheck.c.c")], files("tests/test", ".c.c")].concat();
+    let inputs =
+        [vec![root().join("examples/confcheck.c.c"), root().join("examples/effects.c.c")], files("tests/test", ".c.c")]
+            .concat();
     each(inputs, |p| {
         let cpp = compile_file(p)?;
         let cpp_path = dir.join(format!("{}.cpp", stem(p)));
@@ -163,14 +198,19 @@ fn errors() {
     });
 }
 
-#[test]
-fn hand() {
-    let dir = tmp_dir("hand");
-    each(files("examples/hand", ".cpp"), |p| {
-        let exe = dir.join(stem(p));
-        cxx_build(p, &exe, &[])?;
-        expect(&root().join("tests/hand").join(format!("{}.out", stem(p))), &run_exe(&exe))
-    });
+/// Runs the `ccc` binary on an existing file. Returns the exit code, stdout and stderr.
+fn ccc_on(cmd: &str, file: &Path, extra_env: &[(&str, &str)]) -> (Option<i32>, String, String) {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ccc"));
+    c.arg(cmd).arg(file);
+    for (k, v) in extra_env {
+        c.env(k, v);
+    }
+    let out = c.output().unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
 }
 
 /// Runs the `ccc` binary with `source` in its own directory, which is also its TMPDIR.
@@ -190,42 +230,64 @@ fn ccc(name: &str, cmd: &str, source: &str) -> (Option<i32>, String) {
 /// What `ccc check` finds through the C++ compiler, and how it is shown.
 #[test]
 fn check_reports_cpp_errors_against_the_source() {
-    let main = |body: &str| format!("fn main() -> i32 effects(io) {{ {body} return 0; }}\n");
+    let port = "#include <cc/cc.hpp>\ntype Port = u16 where 1 <= self <= 65535;\n";
+    let strict = "#pragma cc strict\n#include <cstdint>\n";
     let cases = [
-        ("undefined", main("print(nope);"), "'nope'".to_string()),
-        ("mismatch", main("let x: i64 = \"a\";"), "cannot convert".to_string()),
-        ("narrow_let", main("let n: i64 = 73616; let q: u16 = n;"), "may change value".to_string()),
-        ("narrow_literal", main("let q: u16 = 73616;"), "changes value".to_string()),
-        ("to_unsigned", main("let n: i64 = -1; let q: u64 = n;"), "may change the sign".to_string()),
-        ("sign_compare", main("let a: i64 = -1; let b: u64 = 1; print(a < b);"), "comparison".to_string()),
-        ("float", main("let d: f64 = 1.5; let n: i64 = d;"), "may change value".to_string()),
-        (
-            "no_return",
-            "// 2 行目の関数\nfn f(a: i64) -> i64 effects() {\n  if a > 0 {\n    return 1;\n  }\n}\nfn main() -> i32 { return 0; }\n"
-                .to_string(),
-            "no_return.c.c:2: エラー: control reaches end".to_string(),
-        ),
+        ("undefined", "int main() { return nope; }\n".to_string(), "'nope'".to_string()),
+        ("mismatch", "int main() { int x = \"a\"; }\n".to_string(), "invalid conversion".to_string()),
         (
             "literal",
-            format!("type Port = u16 where 1 <= self;\n{}", main("let p: Port = 0;")),
-            "リテラル 0 は Port の条件を満たしていません".to_string(),
+            format!("{port}int main() {{ Port p = 0; }}\n"),
+            "literal.c.c:3: エラー: リテラル 0 は Port の条件を満たしていません".to_string(),
         ),
         (
-            "float_try_from",
-            format!("type Port = u16 where 1 <= self;\n{}", main("let d: f64 = 8080.5; print(Port::try_from(d));")),
+            "literal_range",
+            format!("{port}int main() {{\n  Port p = 70000;\n}}\n"),
+            "literal_range.c.c:4: エラー: リテラル 70000 は Port の条件を満たしていません".to_string(),
+        ),
+        (
+            "runtime_value",
+            format!("{port}int f(int n) {{ Port p = n + 1; return p; }}\nint main() {{}}\n"),
+            "T::try_from".to_string(),
+        ),
+        (
+            "try_from_float",
+            format!("{port}int main() {{ double d = 8080.5; (void)Port::try_from(d); }}\n"),
             "deleted".to_string(),
         ),
         (
-            "unknown_type",
-            "fn f(a: Foo) effects() { }\nfn main() -> i32 { return 0; }\n".to_string(),
-            "'Foo'".to_string(),
+            "invariant_field",
+            "#include <cc/cc.hpp>\nschema S {\n  a: i64;\n  invariant(a > 0);\n}\nvoid f(S& s) { s.a = 5; }\nint main() {}\n"
+                .to_string(),
+            "read-only".to_string(),
+        ),
+        (
+            "raw_as_user",
+            "#include <cc/cc.hpp>\nschema U { a: i64; }\nvoid g(const U&);\nvoid f(cc::Raw<cc::Json> b) { g(b); }\nint main() {}\n"
+                .to_string(),
+            "cc::Raw".to_string(),
+        ),
+        (
+            "strict_narrow",
+            format!("{strict}int main() {{ std::int64_t n = 73616; std::uint16_t q = n; return q; }}\n"),
+            "may change value".to_string(),
+        ),
+        (
+            "strict_sign",
+            format!("{strict}int main() {{ int a = -1; unsigned b = 1; return a < b; }}\n"),
+            "comparison".to_string(),
+        ),
+        (
+            "strict_return",
+            format!("{strict}// 3 行目の関数\nint f(int a) {{\n  if (a > 0) {{\n    return 1;\n  }}\n}}\nint main() {{ return f(1); }}\n"),
+            "control reaches end".to_string(),
         ),
     ];
     let errors: Vec<String> = cases
         .iter()
         .filter_map(|(name, source, needle)| {
             let (code, err) = ccc(name, "check", source);
-            let hidden = ["note:", "ccc-run-", "^~"].iter().any(|h| err.contains(h));
+            let hidden = ["ccc-run-", "^~"].iter().any(|h| err.contains(h));
             let located = err.contains(&format!("{name}.c.c:"));
             (code != Some(1) || !err.contains(needle.as_str()) || hidden || !located)
                 .then(|| format!("{name}: exit {code:?}, `{needle}` を期待\n{err}"))
@@ -234,26 +296,153 @@ fn check_reports_cpp_errors_against_the_source() {
     assert!(errors.is_empty(), "\n{}", errors.join("\n"));
 }
 
+/// Without `#pragma cc strict`, C++ means what it means.
 #[test]
-fn check_accepts_a_valid_program() {
-    let (code, err) = ccc("valid", "check", "fn main() -> i32 effects(io) { print(1); return 0; }\n");
-    assert_eq!(code, Some(0), "{err}");
+fn check_accepts_what_cpp_accepts() {
+    let cases = [
+        ("valid", "#include <cstdio>\nint main() { std::puts(\"x\"); return 0; }\n"),
+        (
+            "narrowing",
+            "#include <cstdint>\nint main() { std::int64_t n = 73616; std::uint16_t q = n; return q - q; }\n",
+        ),
+        ("no_return", "int f(int a) { if (a > 0) { return 1; } }\nint main() { return f(1) - 1; }\n"),
+    ];
+    for (name, source) in cases {
+        let (code, err) = ccc(name, "check", source);
+        assert_eq!(code, Some(0), "{name}: {err}");
+    }
 }
 
 /// A signal other than the abort of a contract violation must not end the program silently.
 #[test]
 fn run_reports_death_by_signal() {
-    let source = "cpp {\n#include <csignal>\n}\nfn main() -> i32 { cpp { std::raise(SIGSEGV); } return 0; }\n";
+    let source = "#include <csignal>\nint main() { std::raise(SIGSEGV); return 0; }\n";
     let (code, err) = ccc("signal", "run", source);
     assert_eq!(code, Some(139), "{err}");
     assert!(err.contains("シグナル 11"), "{err}");
 }
 
-/// Step 0 completion criterion: `Port::of<0>()` does not compile.
+/// A literal that breaks the condition does not compile.
 #[test]
 fn hand_literal_is_checked_at_compile_time() {
     let dir = tmp_dir("hand-fail");
     let r = cxx_build(&root().join("examples/hand/port.cpp"), &dir.join("port"), &["-DCC_EXPECT_COMPILE_ERROR"]);
-    let err = r.expect_err("Port::of<0>() がコンパイルできてしまいました");
-    assert!(err.contains("of<0>"), "{err}");
+    let err = r.expect_err("Port bad = 0; がコンパイルできてしまいました");
+    assert!(err.contains("literal_rejected"), "{err}");
+}
+
+/// Line numbers survive the transform, in reports and in compiler errors alike.
+#[test]
+fn positions_are_the_source_positions() {
+    let source = "#include <cc/cc.hpp>\ntype Port = u16 where self > 0; int after_on_the_same_line = nope;\n";
+    let (code, err) = ccc("same_line", "check", source);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("same_line.c.c:2: エラー:"), "{err}");
+
+    let source =
+        "#include <cc/cc.hpp>\nint f(int x)\n  pre(x > 0,\n      \"正\")\n{\n  return\n    nope;\n}\nint main() {}\n";
+    let (code, err) = ccc("in_body", "check", source);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("in_body.c.c:7: エラー:"), "{err}");
+}
+
+/// .c.h files, generated afresh next to the C++ on every run.
+#[test]
+fn extended_headers() {
+    let main = root().join("tests/headers/main.c.c");
+    let (code, out, err) = ccc_on("run", &main, &[]);
+    expect(&root().join("tests/headers/main.out"), &format!("exit: {code:?}\n--- stdout\n{out}--- stderr\n{err}"))
+        .unwrap();
+
+    let dir = tmp_dir("headers-build");
+    let out_cpp = dir.join("main.cpp");
+    let status = Command::new(env!("CARGO_BIN_EXE_ccc"))
+        .args(["build", main.to_str().unwrap(), "-o", out_cpp.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(dir.join("shared.h").exists() && dir.join("nested.h").exists());
+    let exe = dir.join("main");
+    cxx_build(&out_cpp, &exe, &[&format!("-iquote{}", root().join("tests/headers").display())]).unwrap();
+
+    // Refuses to overwrite a file it did not write.
+    std::fs::write(dir.join("shared.h"), "// mine\n").unwrap();
+    let again = Command::new(env!("CARGO_BIN_EXE_ccc"))
+        .args(["build", main.to_str().unwrap(), "-o", out_cpp.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!again.status.success());
+    assert_eq!(std::fs::read_to_string(dir.join("shared.h")).unwrap(), "// mine\n");
+}
+
+fn clang_available() -> bool {
+    let candidates = ["clang++-22", "clang++-21", "clang++-20", "clang++-19", "clang++"];
+    let found = candidates.iter().any(|c| Command::new(c).arg("--version").output().is_ok_and(|o| o.status.success()));
+    assert!(found || std::env::var_os("CI").is_none(), "CI には Clang が必要です");
+    found
+}
+
+#[test]
+fn effects() {
+    if !clang_available() {
+        eprintln!("Clang がないので効果の検査のテストを飛ばします");
+        return;
+    }
+    let (code, _, err) = ccc_on("check", &root().join("tests/effects/clean.c.c"), &[]);
+    assert_eq!(code, Some(0), "{err}");
+    for example in ["examples/confcheck.c.c", "examples/effects.c.c"] {
+        let (code, _, err) = ccc_on("check", &root().join(example), &[]);
+        assert_eq!(code, Some(0), "{example}: {err}");
+    }
+
+    let (code, _, err) = ccc_on("check", &root().join("tests/effects/violations.c.c"), &[]);
+    assert_eq!(code, Some(1), "{err}");
+    expect(&root().join("tests/effects/violations.err"), &err).unwrap();
+
+    let (code, _, err) = ccc_on("check", &root().join("tests/headers/bad_effect.c.c"), &[]);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("bad_effect.c.c:3:") && err.contains("shout"), "{err}");
+}
+
+/// Adding `cc::print` to a function declared pure must be caught: PLAN.md step 7.
+#[test]
+fn a_print_added_to_confcheck_is_reported() {
+    if !clang_available() {
+        return;
+    }
+    let text = std::fs::read_to_string(root().join("examples/confcheck.c.c")).unwrap();
+    let changed = text.replace("std::int64_t sum = 0;", "std::int64_t sum = 0; cc::print(\"debug\");");
+    assert_ne!(text, changed);
+    let (code, err) = ccc("confcheck_debug", "check", &changed);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("cc::print") && err.contains("total_weight"), "{err}");
+}
+
+/// Without Clang the check is skipped with a warning rather than passing in silence.
+#[test]
+fn effects_without_clang_warn() {
+    let dir = tmp_dir("no-clang");
+    let file = dir.join("f.c.c");
+    std::fs::write(&file, "[[cc::effects()]] int f() { return 0; }\nint main() { return f(); }\n").unwrap();
+    // A PATH holding only what g++ needs.
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let which = |name: &str| {
+        let out = Command::new("which").arg(name).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    for tool in ["as", "ld"] {
+        let _ = std::os::unix::fs::symlink(which(tool), bin.join(tool));
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_ccc"))
+        .arg("check")
+        .arg(&file)
+        .env("PATH", &bin)
+        .env("CXX", which("g++"))
+        .env_remove("CC_CLANG")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("Clang が見つからない"), "{err}");
 }

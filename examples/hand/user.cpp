@@ -1,11 +1,11 @@
-// Step 0: the target shape for a `schema`, written by hand.
+// What a `schema` stands for, written by hand against cc.hpp: plain C++.
 //
 //   type Email = string matches email_format;
 //   schema User {
 //     id:    u64         where self > 0;
 //     name:  string      where 1 <= len(self) <= 50 transform trim;
 //     email: Email;
-//     age:   i64?        where 0 <= self <= 150;
+//     age:   int64?      where 0 <= self <= 150;
 //     tags:  vec<string> where len(self) <= 3 = [];
 //     invariant(age == none || age >= 13, "13歳以上");
 //   }

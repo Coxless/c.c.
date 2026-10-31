@@ -1,0 +1,14 @@
+exit: Some(134)
+--- stdout
+ok({"host":"a","port":80})
+err(Endpoint の検証に失敗しました（2 件）
+  - host: len(self) >= 1 を満たしていません
+  - port: 1 <= self <= 65535 を満たしていません)
+4
+nested
+--- stderr
+contract violation: pre「負でない」
+  条件: x >= 0
+  責任: 呼び出し側  main.c.c:8  main() → doubled()
+  契約: shared.c.h:16
+  値:   x = -1

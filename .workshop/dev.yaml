@@ -5,14 +5,14 @@
 # - base / sdks を変更したら `workshop refresh` で反映する
 # - actions の変更は refresh 不要 (即時反映)
 #
-# cargo と g++ はワークショップの中だけに入る。ホストには何も入れない。
+# cargo、g++、Clang はワークショップの中だけに入る。ホストには何も入れない。
 
 name: dev
 base: ubuntu@24.04   # apt の g++ が 13 になる (PLAN.md の対応コンパイラ)
 
 sdks:
   - name: rust          # cargo
-  - name: project-cxx   # g++ (.workshop/cxx/ にある、このリポジトリ専用の SDK)
+  - name: project-cxx   # g++ と Clang (.workshop/cxx/ にある、このリポジトリ専用の SDK)
 
 # `workshop run -- <action> [引数...]` で実行する。プロジェクトは /project にマウントされる。
 actions:
@@ -20,7 +20,7 @@ actions:
     cd /project/compiler
     cargo build "$@"
 
-  # スナップショット・実行・エラー・手書き版のテスト。
+  # 互換性・スナップショット・実行・エラー・効果の検査のテスト。
   # 期待値の更新は `workshop exec -- bash -c 'cd /project/compiler && UPDATE=1 cargo test'`
   test: |
     cd /project/compiler

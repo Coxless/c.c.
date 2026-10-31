@@ -1,0 +1,6 @@
+exit: 0
+--- stdout
+test 合計
+  ok
+1 件中 1 件成功
+--- stderr

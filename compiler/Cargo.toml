@@ -7,3 +7,7 @@ license = "MIT"
 repository = "https://github.com/Coxless/c.c."
 
 [dependencies]
+
+# The effect check reads a stream of up to a gigabyte, which takes minutes unoptimized.
+[profile.dev]
+opt-level = 2

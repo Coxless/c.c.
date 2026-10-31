@@ -1,18 +1,24 @@
-//! Hand-written recursive descent parser.
+//! Hand-written recursive descent parser for `type` and `schema`.
 
 use crate::ast::*;
 use crate::diag::Diag;
 use crate::lexer::{Tok, Token};
 
-pub fn parse(tokens: Vec<Token>) -> Result<Program, Diag> {
-    let mut p = Parser { toks: tokens, pos: 0, enum_owner: None, hoisted: Vec::new(), in_test: false };
-    let mut items = Vec::new();
-    while !p.at_eof() {
-        let item = p.item()?;
-        items.extend(p.hoisted.drain(..).map(Item::Enum));
-        items.push(item);
-    }
-    Ok(Program { items })
+/// `type Port = u16 where ...;`, from the word `type` on.
+pub fn parse_type(tokens: Vec<Token>) -> Result<TypeDecl, Diag> {
+    let mut p = Parser { toks: tokens, pos: 0, enum_owner: None, hoisted: Vec::new() };
+    let lo = p.bump().span;
+    p.type_decl(lo)
+}
+
+/// `[open] schema S { ... }`, with the inline enums of its fields.
+pub fn parse_schema(tokens: Vec<Token>) -> Result<(SchemaDecl, Vec<EnumDecl>), Diag> {
+    let mut p = Parser { toks: tokens, pos: 0, enum_owner: None, hoisted: Vec::new() };
+    let lo = p.span();
+    let open = p.eat_kw("open");
+    p.bump();
+    let schema = p.schema(lo, open)?;
+    Ok((schema, p.hoisted))
 }
 
 struct Parser {
@@ -22,7 +28,6 @@ struct Parser {
     enum_owner: Option<String>,
     /// Inline enums of the current item, to be declared before it.
     hoisted: Vec<EnumDecl>,
-    in_test: bool,
 }
 
 type PResult<T> = Result<T, Diag>;
@@ -32,7 +37,6 @@ fn describe(t: &Tok) -> String {
         Tok::Ident(s) => format!("`{s}`"),
         Tok::Int(s) | Tok::Float(s) => format!("数値 `{s}`"),
         Tok::Str { .. } => "文字列".into(),
-        Tok::Cpp(_) => "cpp ブロック".into(),
         Tok::Punct(p) => format!("`{p}`"),
         Tok::Eof => "ファイルの終わり".into(),
     }
@@ -127,57 +131,7 @@ impl Parser {
         }
     }
 
-    // ---------------------------------------------------------------- items
-
-    fn item(&mut self) -> PResult<Item> {
-        let lo = self.span();
-        if let Tok::Cpp(code) = self.tok().clone() {
-            self.bump();
-            return Ok(Item::Cpp { code, span: lo });
-        }
-        if self.eat_kw("type") {
-            return self.type_decl(lo).map(Item::Type);
-        }
-        if self.is_kw("open") && matches!(self.nth(1), Tok::Ident(s) if s == "schema") {
-            self.bump();
-            self.bump();
-            return self.schema(lo, true).map(Item::Schema);
-        }
-        if self.eat_kw("schema") {
-            return self.schema(lo, false).map(Item::Schema);
-        }
-        if self.eat_kw("enum") {
-            let name = self.ident()?;
-            let (variants, end) = self.enum_body()?;
-            return Ok(Item::Enum(EnumDecl { name, variants, span: lo.to(end) }));
-        }
-        if self.is_kw("test") && matches!(self.nth(1), Tok::Str { .. }) {
-            self.bump();
-            let label = self.string()?;
-            self.in_test = true;
-            let body = self.block()?;
-            self.in_test = false;
-            let span = lo.to(self.prev_span());
-            let func = FnDecl {
-                name: Name { text: "test".into(), span: lo },
-                is_contract: false,
-                params: Vec::new(),
-                ret: None,
-                effects: None,
-                pres: Vec::new(),
-                posts: Vec::new(),
-                body: Some(body),
-                span,
-            };
-            return Ok(Item::Test(TestDecl { label, func }));
-        }
-        let is_extern = self.eat_kw("extern");
-        let is_contract = self.eat_kw("contract");
-        if self.eat_kw("fn") {
-            return self.fn_decl(lo, is_contract, is_extern).map(Item::Fn);
-        }
-        Err(self.unexpected("宣言（type / schema / enum / fn / contract fn / test / cpp）"))
-    }
+    // -------------------------------------------------------- declarations
 
     fn type_decl(&mut self, lo: Span) -> PResult<TypeDecl> {
         let name = self.ident()?;
@@ -261,72 +215,15 @@ impl Parser {
         Ok(Clause { cond, label, span: lo.to(end) })
     }
 
-    fn fn_decl(&mut self, lo: Span, is_contract: bool, is_extern: bool) -> PResult<FnDecl> {
-        let name = self.ident()?;
-        self.expect("(")?;
-        let mut params = Vec::new();
-        while !self.is(")") {
-            let name = self.ident()?;
-            if !self.eat(":") {
-                return Err(Diag::new(name.span, "引数は `名前: 型` の順で書きます")
-                    .note("例: `fn withdraw(a: Account&, amt: i64)`"));
-            }
-            let ty = self.ty()?;
-            let by_ref = self.eat("&");
-            params.push(Param { name, ty, by_ref });
-            if !self.eat(",") {
-                break;
-            }
-        }
-        self.expect(")")?;
-        let ret = if self.eat("->") { Some(self.ty()?) } else { None };
-        let (mut effects, mut pres, mut posts) = (None, Vec::new(), Vec::new());
-        loop {
-            let clause_lo = self.span();
-            if self.eat_kw("effects") {
-                self.expect("(")?;
-                let mut list = Vec::new();
-                while !self.is(")") {
-                    list.push(self.ident()?);
-                    if !self.eat(",") {
-                        break;
-                    }
-                }
-                self.expect(")")?;
-                effects = Some(list);
-            } else if self.eat_kw("pre") {
-                pres.push(self.clause(clause_lo)?);
-            } else if self.eat_kw("post") {
-                self.expect("(")?;
-                let binder = if matches!(self.tok(), Tok::Ident(_)) && matches!(self.nth(1), Tok::Punct(":")) {
-                    let b = self.ident()?;
-                    self.bump();
-                    Some(b)
-                } else {
-                    None
-                };
-                let cond = self.expr()?;
-                let label = if self.eat(",") { Some(self.string()?) } else { None };
-                let end = self.expect(")")?;
-                posts.push(PostClause { binder, cond, label, span: clause_lo.to(end) });
-            } else {
-                break;
-            }
-        }
-        let body = if self.eat(";") {
-            None
-        } else if is_extern {
-            return Err(self.unexpected("extern fn の後には `;` "));
-        } else {
-            Some(self.block()?)
-        };
-        Ok(FnDecl { span: lo.to(self.prev_span()), name, is_contract, params, ret, effects, pres, posts, body })
-    }
-
     // ---------------------------------------------------------------- types
 
     fn ty(&mut self) -> PResult<Type> {
-        let name = self.ident()?;
+        let mut name = self.ident()?;
+        while self.is("::") {
+            self.bump();
+            let next = self.ident()?;
+            name = Name { text: format!("{}::{}", name.text, next.text), span: name.span.to(next.span) };
+        }
         let mut span = name.span;
         let kind = match name.text.as_str() {
             "enum" if self.is("{") => {
@@ -339,17 +236,18 @@ impl Parser {
                 self.hoisted.push(EnumDecl { name: Name { text: owner.clone(), span: name.span }, variants, span });
                 TypeKind::Named(owner)
             }
-            "vec" | "Raw" => {
+            "vec" | "std::vector" | "Raw" | "cc::Raw" | "std::optional" => {
                 self.expect("<")?;
                 let inner = Box::new(self.ty()?);
                 span = span.to(self.expect(">")?);
-                if name.text == "vec" {
-                    TypeKind::Vec(inner)
-                } else {
-                    TypeKind::Raw(inner)
+                match name.text.as_str() {
+                    "vec" | "std::vector" => TypeKind::Vec(inner),
+                    "std::optional" => TypeKind::Optional(inner),
+                    _ => TypeKind::Raw(inner),
                 }
             }
-            "Json" => TypeKind::Json,
+            "Json" | "cc::Json" => TypeKind::Json,
+            "std::string" => TypeKind::Prim(Prim::String),
             n => match Prim::from_name(n) {
                 Some(p) => TypeKind::Prim(p),
                 None => TypeKind::Named(n.to_string()),
@@ -361,165 +259,6 @@ impl Parser {
             ty = Type { span: ty.span.to(end), kind: TypeKind::Optional(Box::new(ty)) };
         }
         Ok(ty)
-    }
-
-    // ----------------------------------------------------------- statements
-
-    fn block(&mut self) -> PResult<Block> {
-        let lo = self.expect("{")?;
-        let mut stmts = Vec::new();
-        while !self.is("}") {
-            if self.at_eof() {
-                return Err(Diag::new(lo, "`{` が閉じていません"));
-            }
-            stmts.push(self.stmt()?);
-        }
-        let hi = self.expect("}")?;
-        Ok(Block { stmts, span: lo.to(hi) })
-    }
-
-    fn stmt(&mut self) -> PResult<Stmt> {
-        let lo = self.span();
-        let kind = if let Tok::Cpp(code) = self.tok().clone() {
-            self.bump();
-            StmtKind::Cpp(code)
-        } else if self.is("{") {
-            StmtKind::Block(self.block()?)
-        } else if self.eat_kw("let") {
-            let name = self.ident()?.text;
-            let ty = if self.eat(":") { Some(self.ty()?) } else { None };
-            self.expect("=")?;
-            let init = self.expr()?;
-            self.expect(";")?;
-            StmtKind::Let { name, ty, init }
-        } else if self.eat_kw("return") {
-            let value = if self.is(";") { None } else { Some(self.expr()?) };
-            self.expect(";")?;
-            StmtKind::Return(value)
-        } else if self.eat_kw("if") {
-            return self.if_stmt(lo);
-        } else if self.eat_kw("for") {
-            let var = self.ident()?.text;
-            if !self.eat_kw("in") {
-                return Err(self.unexpected("`in` "));
-            }
-            let first = self.expr()?;
-            let iter = if self.eat("..") { ForIter::Range(first, self.expr()?) } else { ForIter::Each(first) };
-            StmtKind::For { var, iter, body: self.block()? }
-        } else if self.eat_kw("while") {
-            let cond = self.expr()?;
-            StmtKind::While { cond, body: self.block()? }
-        } else if self.eat_kw("match") {
-            let subject = self.expr()?;
-            self.expect("{")?;
-            let mut arms = Vec::new();
-            while !self.is("}") {
-                arms.push(self.match_arm()?);
-            }
-            self.expect("}")?;
-            StmtKind::Match { subject, arms }
-        } else if self.is_kw("try") && matches!(self.nth(1), Tok::Punct("{")) {
-            self.bump();
-            let body = self.block()?;
-            if !self.eat_kw("catch") {
-                return Err(self.unexpected("`catch` "));
-            }
-            let var = self.ident()?;
-            StmtKind::Try { body, var, handler: self.block()? }
-        } else if self.is_kw("with") && matches!(self.nth(2), Tok::Punct("=")) {
-            if !self.in_test {
-                return Err(Diag::new(lo, "with は test の中でだけ使えます"));
-            }
-            self.bump();
-            let effect = self.ident()?;
-            self.expect("=")?;
-            let handler = self.ident()?;
-            self.expect("{")?;
-            let mut entries = Vec::new();
-            while !self.is("}") {
-                self.expect("{")?;
-                let key = self.expr()?;
-                self.expect(",")?;
-                let value = self.expr()?;
-                self.expect("}")?;
-                entries.push((key, value));
-                if !self.eat(",") {
-                    break;
-                }
-            }
-            self.expect("}")?;
-            StmtKind::With { effect, handler, entries, body: self.block()? }
-        } else if self.in_test && self.is_kw("expect") && matches!(self.nth(1), Tok::Punct("(")) {
-            self.bump();
-            self.bump();
-            let cond = self.expr()?;
-            self.expect(")")?;
-            self.expect(";")?;
-            StmtKind::Expect(cond)
-        } else {
-            let target = self.expr()?;
-            let op = match self.tok() {
-                Tok::Punct("=") => Some(AssignOp::Set),
-                Tok::Punct("+=") => Some(AssignOp::Add),
-                Tok::Punct("-=") => Some(AssignOp::Sub),
-                Tok::Punct("*=") => Some(AssignOp::Mul),
-                Tok::Punct("/=") => Some(AssignOp::Div),
-                Tok::Punct("%=") => Some(AssignOp::Rem),
-                _ => None,
-            };
-            let kind = match op {
-                Some(op) => {
-                    self.bump();
-                    StmtKind::Assign { target, op, value: self.expr()? }
-                }
-                None => StmtKind::Expr(target),
-            };
-            self.expect(";")?;
-            kind
-        };
-        Ok(Stmt { kind, span: lo.to(self.prev_span()) })
-    }
-
-    /// `ok(v) { ... }`, `err(e) { ... }`, `some(x) { ... }`, `none { ... }`
-    fn match_arm(&mut self) -> PResult<MatchArm> {
-        let word = self.ident()?;
-        let kind = match word.text.as_str() {
-            "ok" => ArmKind::Ok,
-            "err" => ArmKind::Err,
-            "some" => ArmKind::Some,
-            "none" => ArmKind::None,
-            other => {
-                return Err(Diag::new(word.span, format!("`{other}` は match の分岐に使えません"))
-                    .note("使えるのは ok(v) / err(e) / some(x) / none です"))
-            }
-        };
-        let binder = if kind == ArmKind::None {
-            None
-        } else {
-            self.expect("(")?;
-            let b = self.ident()?;
-            self.expect(")")?;
-            Some(b)
-        };
-        let body = self.block()?;
-        Ok(MatchArm { kind, binder, span: word.span.to(body.span), body })
-    }
-
-    fn if_stmt(&mut self, lo: Span) -> PResult<Stmt> {
-        let cond = self.expr()?;
-        let then = self.block()?;
-        let els = if self.eat_kw("else") {
-            if self.is_kw("if") {
-                let if_lo = self.bump().span;
-                let nested = self.if_stmt(if_lo)?;
-                Some(Block { span: nested.span, stmts: vec![nested] })
-            } else {
-                Some(self.block()?)
-            }
-        } else {
-            None
-        };
-        Ok(Stmt { kind: StmtKind::If { cond, then, els }, span: lo.to(self.prev_span()) })
     }
 
     // ---------------------------------------------------------- expressions
@@ -598,14 +337,7 @@ impl Parser {
             if self.eat("(") {
                 let args = self.args(")")?;
                 let span = e.span.to(self.prev_span());
-                if matches!(&e.kind, ExprKind::Ident(n) if n == "old") {
-                    if args.len() != 1 {
-                        return Err(Diag::new(span, "old() は引数を1つ取ります"));
-                    }
-                    e = Expr { kind: ExprKind::Old(Box::new(args.into_iter().next().unwrap())), span };
-                } else {
-                    e = Expr { kind: ExprKind::Call(Box::new(e), args), span };
-                }
+                e = Expr { kind: ExprKind::Call(Box::new(e), args), span };
             } else if self.eat(".") {
                 let f = self.ident()?;
                 e = Expr { span: e.span.to(f.span), kind: ExprKind::Field(Box::new(e), f.text) };
@@ -613,9 +345,6 @@ impl Parser {
                 let i = self.expr()?;
                 let end = self.expect("]")?;
                 e = Expr { span: e.span.to(end), kind: ExprKind::Index(Box::new(e), Box::new(i)) };
-            } else if self.is("?") {
-                let end = self.bump().span;
-                e = Expr { span: e.span.to(end), kind: ExprKind::Try(Box::new(e)) };
             } else {
                 return Ok(e);
             }
@@ -656,9 +385,17 @@ impl Parser {
                 "none" => ExprKind::None,
                 "self" => ExprKind::SelfValue,
                 _ if self.is("::") => {
-                    self.bump();
-                    let m = self.ident()?;
-                    return Ok(Expr { kind: ExprKind::Path(s, m.text), span: span.to(m.span) });
+                    let mut prefix = s;
+                    let mut end;
+                    loop {
+                        self.bump();
+                        end = self.ident()?;
+                        if !self.is("::") {
+                            break;
+                        }
+                        prefix = format!("{prefix}::{}", end.text);
+                    }
+                    return Ok(Expr { kind: ExprKind::Path(prefix, end.text), span: span.to(end.span) });
                 }
                 _ => ExprKind::Ident(s),
             },

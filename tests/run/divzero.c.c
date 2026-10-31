@@ -1,11 +1,8 @@
-// Under `ccc run` division by zero stops the program with a message.
-fn div(a: i64, b: i64) -> i64 effects() {
-  return a / b;
-}
+#include <iostream>
 
-fn main() -> i32 effects(io) {
-  print(div(6, 3));
-  print(div(1, 0));
-  print("届かない");
-  return 0;
+int main(int argc, char**) {
+  int zero = argc - 1;
+  std::cout << "before" << std::endl;
+  std::cout << 1 / zero << std::endl;
+  std::cout << "after" << std::endl;
 }

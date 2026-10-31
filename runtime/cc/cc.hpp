@@ -1,12 +1,14 @@
-// C.C. runtime: the header every generated .cpp includes.
+// C.C. runtime: `ccc` includes this header in every file that uses an extension.
 //
-// It can also be used directly from hand-written C++ (step 0 of PLAN.md):
-// refinement errors, schema parse errors with field paths, contract checks
-// with blame, and the small set of builtins the language exposes.
+// It is also an ordinary C++ library: refinement errors, schema parse errors with
+// field paths, contract checks with blame, and small helpers such as cc::must.
 #pragma once
+
+#include <cc/effects.hpp>
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <concepts>
 #include <cstdint>
 #include <cstdio>
@@ -14,7 +16,10 @@
 #include <expected>
 #include <fstream>
 #include <initializer_list>
+#include <iostream>
 #include <map>
+#include <memory>
+#include <ostream>
 #include <optional>
 #include <source_location>
 #include <sstream>
@@ -30,38 +35,45 @@
 #include <unistd.h>
 #endif
 
-// Generated code starts with CC_STRICT: C.C. has no implicit conversions that
-// change a value, and a function cannot end without returning. Being pragmas
-// placed after this header's include, they do not apply to the code in this header.
-#define CC_STRICT                                     \
+// `#pragma cc strict` becomes this. Being pragmas placed after this header's
+// include, they apply to the rest of the file and not to the code in this header.
+#define CC_STRICT                                       \
   _Pragma("GCC diagnostic error \"-Wconversion\"")      \
   _Pragma("GCC diagnostic error \"-Wsign-conversion\"") \
   _Pragma("GCC diagnostic error \"-Wsign-compare\"")    \
   _Pragma("GCC diagnostic error \"-Woverflow\"")        \
   _Pragma("GCC diagnostic error \"-Wreturn-type\"")
 
-// Around `cpp { }` blocks, which are the user's own C++.
-#define CC_CPP_BEGIN                                    \
-  _Pragma("GCC diagnostic push")                        \
-  _Pragma("GCC diagnostic ignored \"-Wconversion\"")      \
-  _Pragma("GCC diagnostic ignored \"-Wsign-conversion\"") \
-  _Pragma("GCC diagnostic ignored \"-Wsign-compare\"")    \
-  _Pragma("GCC diagnostic ignored \"-Woverflow\"")        \
-  _Pragma("GCC diagnostic ignored \"-Wreturn-type\"")
-#define CC_CPP_END _Pragma("GCC diagnostic pop")
-
 namespace cc {
 
 using Json = nlohmann::json;
+
+// Short names for C++ code. Inside `type` and `schema` they are written without `cc::`.
+using i8 = std::int8_t;
+using i16 = std::int16_t;
+using i32 = std::int32_t;
+using i64 = std::int64_t;
+using u8 = std::uint8_t;
+using u16 = std::uint16_t;
+using u32 = std::uint32_t;
+using u64 = std::uint64_t;
+using f64 = double;
+using string = std::string;
+template <class T>
+using vec = std::vector<T>;
+
+// Tag for the private constructors of generated types: the value has been checked.
+struct Unchecked {};
 
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
 // A value did not satisfy the `where` condition of a refined type.
+// Literals only, so that a failed `try_from` allocates nothing.
 struct RefineError {
-  std::string type;       // e.g. "Port", "User.name"
-  std::string condition;  // the condition as written in .c.c
+  const char* type;       // e.g. "Port", "User.name"
+  const char* condition;  // the condition as written in .c.c
 };
 
 // One broken field. `path` is "" for the whole value, otherwise "tags[3]" or "addr.city".
@@ -72,11 +84,11 @@ struct FieldError {
 };
 
 // Every broken field of a schema parse, not just the first one.
-struct ParseError {
+struct CC_GENERATED ParseError {
   std::string type;
   std::vector<FieldError> errors;
 
-  std::string to_string() const {
+  CC_TRUSTED("alloc") std::string to_string() const {
     std::string s = type + " の検証に失敗しました（" + std::to_string(errors.size()) + " 件）";
     for (const auto& e : errors) {
       s += "\n  - " + (e.path.empty() ? std::string("(全体)") : e.path) + ": " + e.message;
@@ -85,7 +97,7 @@ struct ParseError {
   }
 };
 
-// Thrown by `?` when the value is an error. Only functions with `effects(throw)` may do that.
+// Thrown by cc::must when the value is an error.
 struct Failure : std::runtime_error {
   using std::runtime_error::runtime_error;
 };
@@ -97,12 +109,12 @@ struct Failure : std::runtime_error {
 // Data from outside the program. It cannot be used as a validated type until
 // it has gone through `T::parse`, which is the trust boundary.
 template <class T>
-class Raw {
+class CC_GENERATED Raw {
   T v_;
 
  public:
   explicit Raw(T v) : v_(std::move(v)) {}
-  const T& unchecked() const { return v_; }
+  CC_TRUSTED("") const T& unchecked() const { return v_; }
 };
 
 // ---------------------------------------------------------------------------
@@ -139,6 +151,28 @@ constexpr auto integer_value(const A& a) {
 template <class T, integer_like A>
 constexpr bool fits(const A& a) {
   return std::in_range<T>(integer_value(a));
+}
+
+// Not constexpr: reaching this from a consteval constructor is what rejects a literal.
+inline void literal_rejected() {}
+
+// What a field of type T holds before it is checked.
+template <class T>
+struct decoded {
+  using type = T;
+};
+template <Refined T>
+struct decoded<T> {
+  using type = typename T::underlying_type;
+};
+template <class T>
+using decoded_t = typename decoded<T>::type;
+
+inline bool contains(const std::vector<std::string_view>& names, std::string_view name) {
+  for (const auto& n : names) {
+    if (n == name) return true;
+  }
+  return false;
 }
 
 template <class T>
@@ -178,7 +212,7 @@ std::string repr(const T& v) {
   } else if constexpr (std::is_same_v<U, ParseError>) {
     return v.to_string();
   } else if constexpr (std::is_same_v<U, RefineError>) {
-    return v.type + " の条件 " + v.condition + " を満たしていません";
+    return std::string(v.type) + " の条件 " + v.condition + " を満たしていません";
   } else if constexpr (Schema<U>) {
     return v.to_json().dump();
   } else if constexpr (Refined<U>) {
@@ -239,7 +273,6 @@ inline std::string function_name(const std::source_location& loc) {
   std::string_view s = loc.function_name();
   if (auto p = s.find('('); p != std::string_view::npos) s = s.substr(0, p);
   if (auto p = s.find_last_of(" :*&"); p != std::string_view::npos) s = s.substr(p + 1);
-  if (s == "cc_main") s = "main";
   if (s.starts_with("cc_test_")) s = "test";
   return std::string(s);
 }
@@ -272,44 +305,18 @@ inline void violation(Blame blame, const char* kind, const char* label, const ch
       msg += (i ? ", " : "") + values[i].name + " = " + values[i].text;
     msg += "\n";
   }
+  // What the program printed so far comes first, and an abort would lose it.
+  std::cout.flush();
+  std::fflush(stdout);
   std::fputs(msg.c_str(), stderr);
   std::fflush(stderr);
   if (contract_mode == Mode::enforce) std::abort();
 }
 
-// `v[i]` outside the bounds. Always stops, whatever the contract mode: unlike a
-// failed pre/post, there is no defined way to carry on.
-[[noreturn]] inline void index_violation(const std::string& index, std::size_t size,
-                                         const std::source_location& caller) {
-  std::string msg = "contract violation: 添字が範囲外です\n";
-  msg += "  条件: 0 <= 添字 < len\n";
-  msg += "  責任: 呼び出し側  " + where(caller) + "  " + function_name(caller) + "()\n";
-  msg += "  値:   添字 = " + index + ", len = " + std::to_string(size) + "\n";
-  std::fputs(msg.c_str(), stderr);
-  std::fflush(stderr);
-  std::abort();
-}
-
-// `c[i]` from .c.c. Other subscripts, such as a string key of a Json, pass through.
-template <class C, class I>
-decltype(auto) at(C&& c, const I& i, std::source_location caller = std::source_location::current()) {
-  using U = std::remove_cvref_t<C>;
-  if constexpr (Refined<U>) {
-    return at(c.get(), i, caller);
-  } else if constexpr (integer_like<I> && requires { std::size(c); }) {
-    const auto n = integer_value(i);
-    if (!std::in_range<std::size_t>(n) || static_cast<std::size_t>(n) >= std::size(c))
-      index_violation(repr(n), std::size(c), caller);
-    return c[static_cast<std::size_t>(n)];
-  } else {
-    return c[i];
-  }
-}
-
 }  // namespace cc
 
-// Macros for hand-written C++. Generated code calls cc::violation directly so
-// that the condition text in reports is the .c.c source, not the C++ one.
+// Contract checks for C++ written without `pre` and `post`. Generated code calls
+// cc::violation directly.
 #define CC_V(x) ::cc::Value{#x, ::cc::repr(x)}
 #define CC_PRE(cond, label, caller, ...)                                                    \
   do {                                                                                      \
@@ -339,7 +346,7 @@ inline std::string index(const std::string& path, std::size_t i) {
 }
 
 inline FieldError refine_failure(const std::string& path, const RefineError& e) {
-  return {path, e.condition, e.condition + " を満たしていません"};
+  return {path, e.condition, std::string(e.condition) + " を満たしていません"};
 }
 
 // Turns an unrefined value into S, recording an error if the condition fails.
@@ -424,6 +431,26 @@ std::optional<T> decode(const Json& j, const std::string& path, std::vector<Fiel
   }
 }
 
+// Errors in the order the schema declares its fields. Decoding and checking find them
+// at different times, and the reader should not have to care. Unknown fields come last.
+inline void order_errors(std::vector<FieldError>& errs, std::size_t from, const std::string& path,
+                         std::initializer_list<std::string_view> fields) {
+  const auto rank = [&](const FieldError& e) {
+    std::string_view rest = e.path;
+    if (rest.starts_with(path)) rest.remove_prefix(path.size());
+    if (rest.starts_with('.')) rest.remove_prefix(1);
+    rest = rest.substr(0, rest.find_first_of(".["));
+    std::size_t i = 0;
+    for (const auto& f : fields) {
+      if (f == rest) return i;
+      ++i;
+    }
+    return i;
+  };
+  std::stable_sort(errs.begin() + static_cast<std::ptrdiff_t>(from), errs.end(),
+                   [&](const FieldError& a, const FieldError& b) { return rank(a) < rank(b); });
+}
+
 // Root of a schema parse: the input must be a JSON object.
 inline bool expect_object(const Json& j, const std::string& path, std::vector<FieldError>& errs) {
   if (j.is_discarded()) {
@@ -489,7 +516,7 @@ Json encode(const T& v) {
 }
 
 // ---------------------------------------------------------------------------
-// `?` and main
+// Failure
 // ---------------------------------------------------------------------------
 
 template <class E>
@@ -497,39 +524,24 @@ std::string describe(const E& e) {
   return display(e);
 }
 
-// The program's arguments, without the program name.
-inline std::vector<std::string> command_args(int argc, char** argv) {
-  std::vector<std::string> out;
-  for (int i = 1; i < argc; ++i) out.emplace_back(argv[i]);
-  return out;
-}
-
-template <class F>
-int run_main(F f) {
-  try {
-    if constexpr (std::is_void_v<decltype(f())>) {
-      f();
-      return 0;
-    } else {
-      return static_cast<int>(f());
-    }
-  } catch (const std::exception& e) {
-    std::fprintf(stderr, "エラー: %s\n", e.what());
-    return 1;
-  }
+// The value, or a cc::Failure carrying the description of the error.
+template <class T, class E>
+CC_TRUSTED("throw") T must(std::expected<T, E> r) {
+  if (!r) throw Failure(describe(r.error()));
+  return std::move(*r);
 }
 
 // ---------------------------------------------------------------------------
-// Builtins visible from .c.c
+// Functions, which `where`, `matches` and `transform` can also name without `cc::`
 // ---------------------------------------------------------------------------
 
 template <class T>
-std::int64_t len(const T& v) {
+CC_TRUSTED("") std::int64_t len(const T& v) {
   if constexpr (Refined<T>) return len(v.get());
   else return static_cast<std::int64_t>(std::size(v));
 }
 
-inline std::string trim(std::string s) {
+CC_TRUSTED("alloc") inline std::string trim(std::string s) {
   const char* ws = " \t\r\n";
   auto b = s.find_first_not_of(ws);
   if (b == std::string::npos) return {};
@@ -538,7 +550,7 @@ inline std::string trim(std::string s) {
 }
 
 // Deliberately simple: one '@', non-empty local part, a dot inside the domain.
-inline bool email_format(const std::string& s) {
+CC_TRUSTED("") inline bool email_format(const std::string& s) {
   auto at = s.find('@');
   if (at == std::string::npos || at == 0 || s.find('@', at + 1) != std::string::npos) return false;
   auto dot = s.find('.', at + 1);
@@ -546,12 +558,12 @@ inline bool email_format(const std::string& s) {
          s.find_first_of(" \t\r\n") == std::string::npos;
 }
 
-inline Raw<Json> parse_json(const std::string& text) {
+CC_TRUSTED("alloc") inline Raw<Json> parse_json(const std::string& text) {
   return Raw<Json>(Json::parse(text, nullptr, /*allow_exceptions=*/false));
 }
 
 // ---------------------------------------------------------------------------
-// Effect handlers (`with io = ...` in tests)
+// Effect handlers: replacing what the functions below do, for tests
 // ---------------------------------------------------------------------------
 
 class IoHandler {
@@ -587,7 +599,7 @@ class WithIo {
   WithIo& operator=(const WithIo&) = delete;
 };
 
-inline std::string read_file(const std::string& path) {
+CC_TRUSTED("io,throw") inline std::string read_file(const std::string& path) {
   if (io_handler) return io_handler->read_file(path);
   std::ifstream in(path, std::ios::binary);
   if (!in) throw Failure("ファイルを開けません: " + path);
@@ -597,7 +609,7 @@ inline std::string read_file(const std::string& path) {
 }
 
 template <class... A>
-void print(const A&... a) {
+CC_TRUSTED("io") void print(const A&... a) {
   std::string s;
   bool first = true;
   ((s += (first ? "" : " ") + display(a), first = false), ...);
@@ -607,7 +619,7 @@ void print(const A&... a) {
 }
 
 template <class... A>
-void eprint(const A&... a) {
+CC_TRUSTED("io") void eprint(const A&... a) {
   std::string s;
   bool first = true;
   ((s += (first ? "" : " ") + display(a), first = false), ...);
@@ -616,7 +628,7 @@ void eprint(const A&... a) {
 }
 
 template <class... A>
-void log(const A&... a) {
+CC_TRUSTED("log") void log(const A&... a) {
   std::string s = "[log]";
   ((s += " " + display(a)), ...);
   s += "\n";
@@ -655,6 +667,9 @@ inline int run_tests(std::initializer_list<TestCase> tests) {
       } catch (const std::exception& e) {
         ++test_failures;
         std::printf("  例外: %s\n", e.what());
+      } catch (...) {
+        ++test_failures;
+        std::printf("  例外: std::exception の派生ではない値が送出されました\n");
       }
       std::fflush(stdout);
       std::fflush(stderr);

@@ -1,0 +1,20 @@
+exit: 0
+--- stdout
+ok({"level":"low","max":10,"name":"x"})
+err(Limits の検証に失敗しました（1 件）
+  - (全体): high には 100 以上が必要（level != high || max >= 100）)
+err(Limits の検証に失敗しました（1 件）
+  - level: low, high のいずれかが必要です)
+ok({"level":"high","max":100,"name":"y"})
+err(Limits の検証に失敗しました（1 件）
+  - name: len(self) >= 1 を満たしていません)
+err(Limits の検証に失敗しました（1 件）
+  - name: 必須フィールドがありません)
+b 3
+2
+ok({"a":1})
+6 changed
+err(Item の検証に失敗しました（1 件）
+  - id: self > 0 を満たしていません)
+7
+--- stderr

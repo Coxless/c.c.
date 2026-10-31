@@ -1,24 +1,26 @@
-// Step 2: function contracts and blame.
-cpp {
+// Function contracts and blame: a broken `pre` is the caller's fault, a broken `post` the implementation's.
+#include <cc/cc.hpp>
+
+#include <cstdint>
+#include <iostream>
+
 struct Account {
   std::int64_t balance;
 };
-}
 
-contract fn withdraw(a: Account&, amt: i64) -> i64
-  effects(log)
+std::int64_t withdraw(Account& a, std::int64_t amt)
   pre(amt > 0, "金額は正")
   pre(a.balance >= amt, "残高が足りる")
   post(r: r == amt)
   post(a.balance == old(a.balance) - amt)
 {
   a.balance -= amt;
-  log("withdraw", amt);
+  cc::log("withdraw", amt);
   return amt;
 }
 
 // Breaks its own post condition: the report blames the implementation.
-contract fn withdraw_buggy(a: Account&, amt: i64) -> i64
+std::int64_t withdraw_buggy(Account& a, std::int64_t amt)
   pre(amt > 0, "金額は正")
   post(a.balance == old(a.balance) - amt, "残高が amt だけ減る")
 {
@@ -26,19 +28,14 @@ contract fn withdraw_buggy(a: Account&, amt: i64) -> i64
   return amt;
 }
 
-extern fn open_account(balance: i64) -> Account effects();
-cpp {
-inline Account open_account(std::int64_t balance) { return Account{balance}; }
+void pay(Account& a, std::int64_t price) {
+  auto paid = withdraw(a, price);
+  std::cout << "paid " << paid << " balance " << a.balance << "\n";
 }
 
-fn pay(a: Account&, price: i64) effects(io, log) {
-  let paid = withdraw(a, price);
-  print("paid", paid, "balance", a.balance);
-}
-
-fn main() {
-  cpp { cc::contract_mode = cc::Mode::observe; }  // report and continue
-  let acc = open_account(300);
+int main() {
+  cc::contract_mode = cc::Mode::observe;  // report and continue
+  Account acc{300};
   pay(acc, 100);
   pay(acc, 500);
   withdraw_buggy(acc, 50);

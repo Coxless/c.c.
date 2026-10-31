@@ -1,16 +1,22 @@
 exit: 0
 --- stdout
-ok({"address":null,"age":30,"email":"a@example.com","id":1,"name":"Alice","tags":[]})
-err(User の検証に失敗しました（7 件）
+ようこそ Alice さん {"address":null,"age":30,"email":"a@example.com","id":1,"name":"Alice","role":"member","tags":[]}
+err(User の検証に失敗しました（8 件）
   - id: self > 0 を満たしていません
   - name: 1 <= len(self) <= 50 を満たしていません
   - email: matches email_format を満たしていません
   - age: 0 <= self <= 150 を満たしていません
+  - role: admin, member のいずれかが必要です
   - tags[1]: 文字列が必要です
   - address.city: len(self) >= 1 を満たしていません
   - address.zip: 文字列が必要です)
 err(User の検証に失敗しました（1 件）
-  - (全体): 13歳以上（age == none || age >= 13）)
+  - (全体): 管理者は18歳以上（role != admin || age >= 18）)
 err(User の検証に失敗しました（1 件）
   - (全体): JSON として解釈できません)
+ok({"address":null,"age":null,"email":"c@example.com","id":3,"name":"Carol","role":"member","tags":[]})
+err(User の検証に失敗しました（2 件）
+  - id: self > 0 を満たしていません
+  - name: 1 <= len(self) <= 50 を満たしていません)
+Eve
 --- stderr

@@ -1,8 +1,0 @@
-exit: 0
---- stdout
-register 80
-n 111
-k 0 1 9 3 true
-percent err(Percent の条件 0 <= self <= 100 を満たしていません)
-total 10
---- stderr

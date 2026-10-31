@@ -1,9 +1,20 @@
-// Step 1: a refined type.
+// Refined types: a literal is checked at compile time, any other value through try_from.
+#include <cc/cc.hpp>
+
+#include <iostream>
+
 type Port = u16 where 1 <= self <= 65535;
 
-fn main() effects(io) {
-  let http: Port = 8080;
-  print("literal:", http);
-  print("try_from(443):", Port::try_from(443));
-  print("try_from(0):", Port::try_from(0));
+int main() {
+  Port http = 8080;
+  std::cout << http << "\n";
+  std::cout << (http == 8080 ? "same" : "different") << "\n";
+
+  for (int n : {443, 0, 70000}) {
+    if (auto p = Port::try_from(n)) {
+      std::cout << "accepted " << *p << "\n";
+    } else {
+      cc::print(p.error());
+    }
+  }
 }

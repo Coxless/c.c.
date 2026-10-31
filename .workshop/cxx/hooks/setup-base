@@ -3,4 +3,5 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends g++
+# clang は効果の検査に使う。libstdc++ 13 の std::expected を読めるのは 19 以降。
+apt-get install -y --no-install-recommends g++ clang-20

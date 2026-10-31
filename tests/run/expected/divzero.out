@@ -1,5 +1,5 @@
 exit: 1
 --- stdout
-2
+before
 --- stderr
-divzero.c.c:3:12: runtime error: division by zero
+divzero.c.c:6:18: runtime error: division by zero

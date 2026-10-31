@@ -1,0 +1,41 @@
+contract_forms.c.c:3:1: エラー: テンプレートの pre / post にはまだ対応していません
+  |
+3 | template <class T>
+  | ^^^^^^^^
+  = 補足: 今は名前空間のスコープの普通の関数だけに対応しています
+
+contract_forms.c.c:6:27: エラー: pre / post はメンバ関数にはまだ書けません
+  |
+6 |   int method(int x) const pre(x > 0) { return x; }
+  |                           ^^^
+  = 補足: 今は名前空間のスコープの普通の関数だけに対応しています
+
+contract_forms.c.c:8:18: エラー: pre / post は関数の定義に書いてください（宣言だけの関数には書けません）
+  |
+8 | int S_out(int x) pre(x > 0);
+  |                  ^^^
+
+contract_forms.c.c:9:21: エラー: 可変長引数の pre / post にはまだ対応していません
+  |
+9 | int variadic(int a, ...) pre(a > 0) { return a; }
+  |                     ^^^
+
+contract_forms.c.c:10:13: エラー: pre / post を書く関数の引数には名前が必要です
+   |
+10 | int unnamed(int) pre(true) { return 0; }
+   |             ^^^
+
+contract_forms.c.c:11:6: エラー: pre / post を書く関数の戻り値に auto は使えません（型を書いてください）
+   |
+11 | auto deduced(int x) pre(x > 0) { return x; }
+   |      ^^^^^^^
+
+contract_forms.c.c:12:5: エラー: main には pre / post を書けません
+   |
+12 | int main() pre(true) { return 0; }
+   |     ^^^^
+
+contract_forms.c.c:14:3: エラー: type は名前空間のスコープにだけ書けます
+   |
+14 |   type Local = int where self > 0;
+   |   ^^^^

@@ -1,5 +1,6 @@
 exit: abort
 --- stdout
+admin port 8443
 edge port 8080 workers 4
 Server の検証に失敗しました（4 件）
   - name: 1 <= len(self) <= 50 を満たしていません
@@ -10,6 +11,6 @@ Server の検証に失敗しました（4 件）
 --- stderr
 contract violation: pre「ワーカーが1つ以上ある」
   条件: workers > 0
-  責任: 呼び出し側  tour.c.c:32  main() → per_worker()
-  契約: tour.c.c:15
+  責任: 呼び出し側  tour.c.c:36  main() → per_worker()
+  契約: tour.c.c:16
   値:   workers = 0

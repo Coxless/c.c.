@@ -1,0 +1,17 @@
+exit: abort
+--- stdout
+120
+6 10
+2
+2
+42
+5
+9
+10 8
+1 8
+--- stderr
+contract violation: pre「負でない」
+  条件: n >= 0
+  責任: 呼び出し側  forms.c.c:67  main() → factorial()
+  契約: forms.c.c:11
+  値:   n = -1

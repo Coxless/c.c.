@@ -1,0 +1,20 @@
+misplaced.c.c:2:1: エラー: test はファイルのトップレベルにだけ書けます
+  |
+2 | test "名前空間の中" {
+  | ^^^^
+
+misplaced.c.c:6:3: エラー: schema は名前空間のスコープにだけ書けます
+  |
+6 |   schema Inner {
+  |   ^^^^^^
+
+misplaced.c.c:10:1: エラー: 未知の指定 `#pragma cc nonsense`
+   |
+10 | #pragma cc nonsense
+   | ^^^^^^^^^^^^^^^^^^^
+
+misplaced.c.c:11:15: エラー: 未知の効果 `ioo`
+   |
+11 | [[cc::effects(ioo)]] void h();
+   |               ^^^
+   = 補足: 使える効果: io, alloc, throw, async, unsafe, nondet, log

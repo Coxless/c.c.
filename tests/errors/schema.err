@@ -1,6 +1,6 @@
 schema.c.c:2:28: エラー: 値 `admin` が重複しています
   |
-2 | enum Role { admin, member, admin }
+2 | enum Role { admin, member, admin };
   |                            ^^^^^
 
 schema.c.c:4:16: エラー: where には `helper(self)` を書けません
@@ -26,13 +26,23 @@ schema.c.c:7:21: エラー: `owner` は Role の値ではありません
 7 |   invariant(role == Role::owner, "y");
   |                     ^^^^^^^^^^^
 
-schema.c.c:11:22: エラー: `nobody` は Role の値ではありません
-   |
-11 | fn h() effects() { g(nobody); }
-   |                      ^^^^^^
-   = 補足: 使える値: admin, member, admin
+schema.c.c:9:31: エラー: where には `nope` を書けません
+  |
+9 | type T = i64 where self > 0 + nope;
+  |                               ^^^^
+  = 補足: 使えるのはリテラル・self・len()・算術・比較・論理だけです。それ以外の条件は matches か invariant に書いてください
 
-schema.c.c:12:4: エラー: main の引数は `args: vec<string>` だけにしてください
+schema.c.c:10:22: エラー: フィールド `a` が重複しています
    |
-12 | fn main(n: i64) {}
-   |    ^^^^
+10 | schema Dup { a: i64; a: i64; }
+   |                      ^
+
+schema.c.c:11:8: エラー: `Dup` はすでに宣言されています
+   |
+11 | schema Dup { b: i64; }
+   |        ^^^
+
+schema.c.c:12:22: エラー: Raw<T> はスキーマのフィールドには使えません（関数の引数で受け取ってください）
+   |
+12 | schema Holds { body: Raw<Json>; }
+   |                      ^^^^^^^^^
