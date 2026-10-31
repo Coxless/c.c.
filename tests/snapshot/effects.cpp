@@ -47,6 +47,7 @@ struct Config {
     } else {
       f_host = ::cc::refine_into<std::string>(std::string("localhost"), ::cc::join(path, "host"), errs);
     }
+    ::cc::reject_unknown(j, path, {"port", "host"}, errs);
     if (errs.size() != cc_n) return std::nullopt;
     Config out{std::move(*f_port), std::move(*f_host)};
     return out;

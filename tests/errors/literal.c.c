@@ -1,5 +1,5 @@
 type Port = u16 where 1 <= self <= 65535;
-fn connect(Port p) effects() {}
+fn connect(p: Port) effects() {}
 fn main() effects() {
   let n = 8079;
   connect(n + 1);

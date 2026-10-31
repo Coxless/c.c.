@@ -1,7 +1,7 @@
-misc.c.c:2:38: エラー: pre / post は contract fn にだけ書けます
+misc.c.c:2:39: エラー: pre / post は contract fn にだけ書けます
   |
-2 | fn pure_fn(i64 x) -> i64 effects(io) pre(x > 0) {
-  |                                      ^^^^^^^^^^
+2 | fn pure_fn(x: i64) -> i64 effects(io) pre(x > 0) {
+  |                                       ^^^^^^^^^^
   = 補足: `contract fn pure_fn` と宣言してください
 
 misc.c.c:3:3: エラー: `helper` の呼び出しには効果 unsafe が必要ですが、`pure_fn` は effects(io) しか宣言していません

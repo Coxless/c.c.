@@ -13,6 +13,7 @@
 #include <expected>
 #include <fstream>
 #include <initializer_list>
+#include <map>
 #include <optional>
 #include <source_location>
 #include <sstream>
@@ -22,6 +23,11 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#ifdef CC_TEST
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace cc {
 
@@ -117,6 +123,8 @@ std::string repr(const T& v) {
   } else if constexpr (std::is_same_v<U, std::string> || std::is_same_v<U, std::string_view> ||
                        std::is_same_v<U, const char*> || std::is_array_v<U>) {
     return Json(std::string(v)).dump();
+  } else if constexpr (std::is_enum_v<U>) {
+    return std::string(cc_enum_names(v)[static_cast<std::size_t>(v)]);
   } else if constexpr (std::is_same_v<U, Json>) {
     return v.dump();
   } else if constexpr (std::is_same_v<U, ParseError>) {
@@ -184,6 +192,7 @@ inline std::string function_name(const std::source_location& loc) {
   if (auto p = s.find('('); p != std::string_view::npos) s = s.substr(0, p);
   if (auto p = s.find_last_of(" :*&"); p != std::string_view::npos) s = s.substr(p + 1);
   if (s == "cc_main") s = "main";
+  if (s.starts_with("cc_test_")) s = "test";
   return std::string(s);
 }
 
@@ -285,6 +294,17 @@ std::optional<T> decode(const Json& j, const std::string& path, std::vector<Fiel
     return T::parse_at(j, path, errs);
   } else if constexpr (std::is_same_v<T, Json>) {
     return j;
+  } else if constexpr (std::is_enum_v<T>) {
+    const auto names = cc_enum_names(T{});
+    if (j.is_string()) {
+      const auto s = j.get<std::string>();
+      for (std::size_t i = 0; i < names.size(); ++i)
+        if (names[i] == s) return static_cast<T>(i);
+    }
+    std::string expected;
+    for (const auto& n : names) expected += (expected.empty() ? "" : ", ") + std::string(n);
+    expected += " のいずれか";
+    return type_error(path, expected.c_str(), errs), std::nullopt;
   } else if constexpr (std::is_same_v<T, bool>) {
     if (!j.is_boolean()) return type_error(path, "bool", errs), std::nullopt;
     return j.get<bool>();
@@ -357,6 +377,17 @@ inline const Json* field(const Json& j, const char* name) {
   return &*it;
 }
 
+// A field the schema does not declare is usually a typo, so it is an error
+// unless the schema is declared `open schema`.
+inline void reject_unknown(const Json& j, const std::string& path, std::initializer_list<const char*> known,
+                           std::vector<FieldError>& errs) {
+  for (const auto& [key, value] : j.items()) {
+    bool found = false;
+    for (const char* k : known) found = found || key == k;
+    if (!found) errs.push_back({join(path, key), "unknown", "未知のフィールドです"});
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Serialization (validated types -> JSON)
 // ---------------------------------------------------------------------------
@@ -367,6 +398,8 @@ Json encode(const T& v) {
     return v.to_json();
   } else if constexpr (Refined<T>) {
     return encode(v.get());
+  } else if constexpr (std::is_enum_v<T>) {
+    return Json(repr(v));
   } else if constexpr (is_optional<T>::value) {
     return v ? encode(*v) : Json(nullptr);
   } else if constexpr (is_vector<T>::value) {
@@ -385,6 +418,13 @@ Json encode(const T& v) {
 template <class E>
 std::string describe(const E& e) {
   return display(e);
+}
+
+// The program's arguments, without the program name.
+inline std::vector<std::string> command_args(int argc, char** argv) {
+  std::vector<std::string> out;
+  for (int i = 1; i < argc; ++i) out.emplace_back(argv[i]);
+  return out;
 }
 
 template <class F>
@@ -433,7 +473,45 @@ inline Raw<Json> parse_json(const std::string& text) {
   return Raw<Json>(Json::parse(text, nullptr, /*allow_exceptions=*/false));
 }
 
+// ---------------------------------------------------------------------------
+// Effect handlers (`with io = ...` in tests)
+// ---------------------------------------------------------------------------
+
+class IoHandler {
+ public:
+  virtual ~IoHandler() = default;
+  virtual std::string read_file(const std::string& path) = 0;
+};
+
+inline thread_local IoHandler* io_handler = nullptr;
+
+// Files in memory. Reading anything else fails like a missing file does.
+class MemoryFs : public IoHandler {
+  std::map<std::string, std::string> files_;
+
+ public:
+  MemoryFs() = default;
+  MemoryFs(std::initializer_list<std::pair<const std::string, std::string>> files) : files_(files) {}
+  std::string read_file(const std::string& path) override {
+    auto it = files_.find(path);
+    if (it == files_.end()) throw Failure("ファイルを開けません: " + path);
+    return it->second;
+  }
+};
+
+// Installs a handler for the current scope.
+class WithIo {
+  IoHandler* previous_;
+
+ public:
+  explicit WithIo(IoHandler& handler) : previous_(io_handler) { io_handler = &handler; }
+  ~WithIo() { io_handler = previous_; }
+  WithIo(const WithIo&) = delete;
+  WithIo& operator=(const WithIo&) = delete;
+};
+
 inline std::string read_file(const std::string& path) {
+  if (io_handler) return io_handler->read_file(path);
   std::ifstream in(path, std::ios::binary);
   if (!in) throw Failure("ファイルを開けません: " + path);
   std::ostringstream ss;
@@ -452,11 +530,73 @@ void print(const A&... a) {
 }
 
 template <class... A>
+void eprint(const A&... a) {
+  std::string s;
+  bool first = true;
+  ((s += (first ? "" : " ") + display(a), first = false), ...);
+  s += "\n";
+  std::fputs(s.c_str(), stderr);
+}
+
+template <class... A>
 void log(const A&... a) {
   std::string s = "[log]";
   ((s += " " + display(a)), ...);
   s += "\n";
   std::fputs(s.c_str(), stderr);
 }
+
+// ---------------------------------------------------------------------------
+// Tests (`ccc test`)
+// ---------------------------------------------------------------------------
+
+#ifdef CC_TEST
+inline int test_failures = 0;
+
+inline void expect_failed(const char* condition, const std::source_location& loc, std::vector<Value> values) {
+  ++test_failures;
+  std::printf("  expect 失敗: %s  (%s)\n", condition, where(loc).c_str());
+  for (const auto& v : values) std::printf("    %s = %s\n", v.name.c_str(), v.text.c_str());
+}
+
+struct TestCase {
+  const char* name;
+  void (*run)();
+};
+
+// Each test runs in its own process: a contract violation aborts, by design,
+// and must not take the remaining tests with it.
+inline int run_tests(std::initializer_list<TestCase> tests) {
+  std::size_t passed = 0;
+  for (const auto& t : tests) {
+    std::printf("test %s\n", t.name);
+    std::fflush(stdout);
+    const pid_t child = fork();
+    if (child == 0) {
+      try {
+        t.run();
+      } catch (const std::exception& e) {
+        ++test_failures;
+        std::printf("  例外: %s\n", e.what());
+      }
+      std::fflush(stdout);
+      std::fflush(stderr);
+      _exit(test_failures == 0 ? 0 : 1);
+    }
+    int status = 0;
+    waitpid(child, &status, 0);
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+      ++passed;
+      std::printf("  ok\n");
+    } else if (WIFSIGNALED(status)) {
+      std::printf("  FAILED（異常終了）\n");
+    } else {
+      std::printf("  FAILED\n");
+    }
+  }
+  std::printf("%zu 件中 %zu 件成功\n", tests.size(), passed);
+  return passed == tests.size() ? 0 : 1;
+}
+#endif
 
 }  // namespace cc

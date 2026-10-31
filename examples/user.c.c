@@ -18,12 +18,12 @@ schema User {
   invariant(age == none || age >= 13, "13歳以上");
 }
 
-fn greet(User u) effects(io) {
+fn greet(u: User) effects(io) {
   print("ようこそ", u.name, "さん", u.to_json());
 }
 
 // Raw<Json> is untrusted input; User::parse is the trust boundary.
-fn handle(Raw<Json> body) effects(io, throw) {
+fn handle(body: Raw<Json>) effects(io, throw) {
   let user = User::parse(body)?;
   greet(user);
 }

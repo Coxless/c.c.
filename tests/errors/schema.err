@@ -1,0 +1,38 @@
+schema.c.c:2:28: エラー: 値 `admin` が重複しています
+  |
+2 | enum Role { admin, member, admin }
+  |                            ^^^^^
+
+schema.c.c:4:16: エラー: where には `helper(self)` を書けません
+  |
+4 |   a: i64 where helper(self) > 0;
+  |                ^^^^^^^^^^^^
+  = 補足: 使えるのはリテラル・self・len()・算術・比較・論理だけです。それ以外の条件は matches か invariant に書いてください
+
+schema.c.c:5:16: エラー: `owner` は Role の値ではありません
+  |
+5 |   role: Role = owner;
+  |                ^^^^^
+  = 補足: 使える値: admin, member, admin
+
+schema.c.c:6:21: エラー: `owner` は Role の値ではありません
+  |
+6 |   invariant(role == owner, "x");
+  |                     ^^^^^
+  = 補足: 使える値: admin, member, admin
+
+schema.c.c:7:21: エラー: `owner` は Role の値ではありません
+  |
+7 |   invariant(role == Role::owner, "y");
+  |                     ^^^^^^^^^^^
+
+schema.c.c:11:22: エラー: `nobody` は Role の値ではありません
+   |
+11 | fn h() effects() { g(nobody); }
+   |                      ^^^^^^
+   = 補足: 使える値: admin, member, admin
+
+schema.c.c:12:4: エラー: main の引数は `args: vec<string>` だけにしてください
+   |
+12 | fn main(n: i64) {}
+   |    ^^^^

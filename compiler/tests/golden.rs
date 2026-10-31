@@ -4,6 +4,7 @@
 //! - run:      examples/*.c.c and tests/run/*.c.c, built with g++ and run -> tests/run/expected/<name>.out
 //! - errors:   tests/errors/*.c.c -> tests/errors/<name>.err
 //! - hand:     examples/hand/*.cpp (step 0), built and run -> tests/hand/<name>.out
+//! - tests:    examples/confcheck.c.c and tests/test/*.c.c, built with CC_TEST and run -> tests/test/expected/<name>.out
 //!
 //! Run with UPDATE=1 to rewrite the expected files.
 
@@ -67,7 +68,10 @@ fn cxx_build(cpp: &Path, exe: &Path, extra: &[&str]) -> Result<(), String> {
 }
 
 fn run_exe(exe: &Path) -> String {
-    let out = Command::new(exe).output().unwrap();
+    show_output(Command::new(exe).output().unwrap())
+}
+
+fn show_output(out: std::process::Output) -> String {
     let code = out.status.code().map_or("abort".to_string(), |c| c.to_string());
     format!(
         "exit: {code}\n--- stdout\n{}--- stderr\n{}",
@@ -112,6 +116,41 @@ fn run() {
         std::fs::write(&cpp_path, cpp).unwrap();
         cxx_build(&cpp_path, &exe, &[])?;
         expect(&root().join("tests/run/expected").join(format!("{}.out", stem(p))), &run_exe(&exe))
+    });
+}
+
+/// examples/confcheck.c.c takes a file argument, which `run` cannot pass.
+#[test]
+fn confcheck_cli() {
+    let dir = tmp_dir("confcheck");
+    let cpp_path = dir.join("confcheck.cpp");
+    let exe = dir.join("confcheck");
+    std::fs::write(&cpp_path, compile_file(&root().join("examples/confcheck.c.c")).unwrap()).unwrap();
+    cxx_build(&cpp_path, &exe, &[]).unwrap();
+    let configs = root().join("examples/confcheck");
+    let mut errors = Vec::new();
+    for name in ["good", "bad", "duplicate", "missing"] {
+        let out = Command::new(&exe).arg(format!("{name}.json")).current_dir(&configs).output().unwrap();
+        let expected = root().join("tests/run/expected").join(format!("confcheck_{name}.out"));
+        if let Err(e) = expect(&expected, &show_output(out)) {
+            errors.push(e);
+        }
+    }
+    assert!(errors.is_empty(), "\n{}", errors.join("\n\n"));
+}
+
+/// `test` blocks, built the way `ccc test` builds them.
+#[test]
+fn test_blocks() {
+    let dir = tmp_dir("tests");
+    let inputs = [vec![root().join("examples/confcheck.c.c")], files("tests/test", ".c.c")].concat();
+    each(inputs, |p| {
+        let cpp = compile_file(p)?;
+        let cpp_path = dir.join(format!("{}.cpp", stem(p)));
+        let exe = dir.join(stem(p));
+        std::fs::write(&cpp_path, cpp).unwrap();
+        cxx_build(&cpp_path, &exe, &["-DCC_TEST"])?;
+        expect(&root().join("tests/test/expected").join(format!("{}.out", stem(p))), &run_exe(&exe))
     });
 }
 

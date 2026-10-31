@@ -56,6 +56,8 @@ pub enum TypeKind {
     Vec(Box<Type>),
     Raw(Box<Type>),
     Optional(Box<Type>),
+    /// Value of `T::parse` / `T::try_from`: success type and error type. Not writable in source.
+    Result(Box<Type>, Box<Type>),
 }
 
 #[derive(Clone, Debug)]
@@ -148,15 +150,69 @@ pub enum ForIter {
 
 #[derive(Clone, Debug)]
 pub enum StmtKind {
-    Let { name: String, ty: Option<Type>, init: Expr },
-    Assign { target: Expr, op: AssignOp, value: Expr },
+    Let {
+        name: String,
+        ty: Option<Type>,
+        init: Expr,
+    },
+    Assign {
+        target: Expr,
+        op: AssignOp,
+        value: Expr,
+    },
     Expr(Expr),
     Return(Option<Expr>),
-    If { cond: Expr, then: Block, els: Option<Block> },
-    For { var: String, iter: ForIter, body: Block },
-    While { cond: Expr, body: Block },
+    If {
+        cond: Expr,
+        then: Block,
+        els: Option<Block>,
+    },
+    For {
+        var: String,
+        iter: ForIter,
+        body: Block,
+    },
+    While {
+        cond: Expr,
+        body: Block,
+    },
     Block(Block),
     Cpp(String),
+    Match {
+        subject: Expr,
+        arms: Vec<MatchArm>,
+    },
+    Try {
+        body: Block,
+        var: Name,
+        handler: Block,
+    },
+    /// `with io = MemoryFs{ {path, text}, ... } { ... }`, only inside `test`.
+    With {
+        effect: Name,
+        handler: Name,
+        entries: Vec<(Expr, Expr)>,
+        body: Block,
+    },
+    /// `expect(cond);`, only inside `test`.
+    Expect(Expr),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArmKind {
+    Ok,
+    Err,
+    Some,
+    None,
+}
+
+#[derive(Clone, Debug)]
+pub struct MatchArm {
+    pub kind: ArmKind,
+    /// `None` only for the `none` arm.
+    pub binder: Option<Name>,
+    pub body: Block,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -216,17 +272,37 @@ pub struct PostClause {
 
 #[derive(Clone, Debug)]
 pub struct SchemaDecl {
+    /// `open schema`: unknown JSON fields are ignored instead of rejected.
+    pub open: bool,
     pub name: Name,
     pub fields: Vec<Field>,
     pub invariants: Vec<Clause>,
     pub span: Span,
 }
 
+/// `enum Role { admin, member }`. An inline `enum { ... }` field becomes one of
+/// these named `<Schema>_<field>`, declared just before the schema.
+#[derive(Clone, Debug)]
+pub struct EnumDecl {
+    pub name: Name,
+    pub variants: Vec<Name>,
+    pub span: Span,
+}
+
+/// `test "label" { ... }`. The body is held as an ordinary function without
+/// declared effects, so it is checked and emitted the same way.
+#[derive(Clone, Debug)]
+pub struct TestDecl {
+    pub label: String,
+    pub func: FnDecl,
+}
+
+/// `name: T` or `name: T&`
 #[derive(Clone, Debug)]
 pub struct Param {
+    pub name: Name,
     pub ty: Type,
     pub by_ref: bool,
-    pub name: Name,
 }
 
 #[derive(Clone, Debug)]
@@ -248,7 +324,9 @@ pub struct FnDecl {
 pub enum Item {
     Type(TypeDecl),
     Schema(SchemaDecl),
+    Enum(EnumDecl),
     Fn(FnDecl),
+    Test(TestDecl),
     Cpp { code: String, span: Span },
 }
 

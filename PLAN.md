@@ -80,7 +80,7 @@ type Port = u16 where 1 <= self && self <= 65535;
 ### ステップ2：関数と関数契約
 
 ```cpp
-contract fn withdraw(Account& a, i64 amt) -> i64
+contract fn withdraw(a: Account&, amt: i64) -> i64
   pre(amt > 0, "金額は正")
   pre(a.balance >= amt, "残高が足りる")
   post(r: r == amt)
@@ -155,13 +155,15 @@ contract fn withdraw(Account& a, i64 amt) -> i64
 | 0. ヘッダーライブラリ | 完了 | `examples/hand/` を手書き。`cargo test` の `hand` / `hand_literal_is_checked_at_compile_time` |
 | 1. `type ... where` | 完了 | `examples/port.c.c` |
 | 2. 関数と関数契約 | 完了 | `examples/withdraw.c.c`、`tests/run/enforce.c.c` |
-| 3. `schema` | 完了（`enum` は未対応） | `examples/user.c.c` |
-| 4. 効果の検査 | 完了 | `examples/effects.c.c`、`tests/errors/effects.c.c` |
+| 3. `schema` | 完了 | `examples/user.c.c`、`tests/run/lang.c.c` |
+| 4. 効果の検査 | 完了 | `examples/effects.c.c`、`tests/errors/effects.c.c`、`tests/errors/methods.c.c` |
+| 区切りの見直し | 完了（7章） | `examples/confcheck.c.c` |
+| `with` と `test` | 完了 | `ccc test examples/confcheck.c.c`、`tests/test/failing.c.c` |
 
 ### 実装中に決めたこと
 
 - **効果を省略した関数（未決事項1）**：検査せず「何でも可」とする。ただし効果を宣言した関数からそれを呼ぶには `unsafe` が必要。既存コードに段階的に注釈を足していける
-- **既存 C++ の効果（未決事項2）**：`extern fn` で宣言していない C++ 関数と、関数内の `cpp { }` は `unsafe` 扱い。`extern fn f(...) effects(...);` で効果を絞れる
+- **既存 C++ の効果（未決事項2）**：`extern fn` で宣言していない C++ 関数、関数内の `cpp { }`、C++ のメソッド呼び出しは `unsafe` 扱い。`extern fn f(...) effects(...);` で効果を絞れる
 - **`?`**：失敗時は `cc::Failure` 例外を送出する。したがって `throw` 効果が必要。`main` で捕まえてエラーメッセージを表示し、終了コード 1 で終わる
 - **契約違反の位置**：生成コードに `#line` を入れ、`std::source_location` で `.c.c` の行番号を報告する。呼び出し位置は契約付き関数の隠し引数（既定引数）で受け取る
 - **スキーマのフィールド**：`where` 付きのフィールドは入れ子の条件付き型（`User::id_t` など）になる。元の型へは暗黙に変換できるので読むときは普通の値として使える
@@ -169,7 +171,64 @@ contract fn withdraw(Account& a, i64 amt) -> i64
 
 ### 既知の制限（区切りでの見直し候補）
 
-- メソッド呼び出し（`x.size()` など）の効果は追跡していない
 - `matches` / `transform` に使えるのは組み込み関数か `extern fn` だけ
-- 型の推論は最小限。型が分からない式の誤りは C++ コンパイラのエラーになる
-- スキーマに `enum` がない。値を作る手段は `parse` か `cpp` / `extern fn` だけ
+- 型の推論は最小限。型が分からない式の誤りは C++ コンパイラのエラーになり、候補の一覧が長く続くことがある
+- スキーマ型の値を作る手段は `parse` か `cpp` / `extern fn` だけ
+- `extern fn` の効果の宣言は信用するだけで、検証はしない
+- `v[i]` の範囲外アクセスと整数のオーバーフローは効果として追跡しない
+- `match` で分けられるのは ok / err と some / none だけ。`enum` は `if` で比較する
+- `T::parse` の結果の型は書けないので、そのまま返す関数は作れない。`?` で `T` にして返す
+- 文字列と小数のリテラルの既定値は、`parse` が既定値を使うときに検査する。条件を満たさない既定値は入力のエラーとして報告される
+- `with` は `test` の中でだけ使え、差し替えられるのは `io` の `read_file` だけ。`print` は本物のまま出力される
+- `try` / `catch` が捕まえるのは `std::exception` の派生だけ
+- `ccc test` は `fork` を使うので POSIX 専用。1ファイルずつ実行し、テストの絞り込みはできない
+
+---
+
+## 7. 試作の見直し（ステップ4後の区切り）
+
+設定ファイルを読んで検証する CLI（[examples/confcheck.c.c](examples/confcheck.c.c)）を書いて確かめた。見つかった問題は「C++ のエラーがそのまま出る」を除いて解決済みで、下の表の「対応」に解決方法を示す。
+
+### うまくいったこと
+
+- 値の契約が狙いどおりに働いた。`examples/confcheck/bad.json` では入れ子や配列の中も含めて 9 件のエラーが `upstreams[1].port` のようなパス付きで一度に報告される
+- 検証ロジックを手書きせずに済んだ。手書きの検査が必要だったのは重複チェックだけ（当初は `parse` の後で別に検査したが、今は `invariant` に書ける）
+- `pre` 違反の報告は、責任者と `.c.c` の行番号を正しく示した
+
+### 見つかった問題
+
+優先度 A は安全性を損なう、または回避が環境依存になるもの。B は回避できるが何度も書くことになるもの。C は使い勝手の問題。「当時の回避」は最初に書いたときのもので、今は必要ない。
+
+| 優先度 | 問題 | 当時の挙動 | 当時の回避 | 対応 |
+|---|---|---|---|---|
+| A | 効果検査に穴がある | `effects()` の関数で `v.at(3)` を呼ぶと検査を通り、`noexcept` のため実行時に `std::terminate` で落ちる。`effects(io)` の `main` での `r.value()` も同じ | 呼び出し前に `has_value()` を確認する | メソッド呼び出しを `unsafe` 扱いにした |
+| A | `main` が引数を受け取れない | `fn main(vec<string> args)` はエラー。`ccc run -- <args>` は引数を渡すのに読めない | `/proc/self/cmdline` を読む（Linux 専用） | `fn main(args: vec<string>)` |
+| A | 失敗を扱う構文がない | `?` は例外を送出するだけで、捕まえる構文も `expected` を取り出す構文もない。読めないファイルと不正な設定を終了コードで区別できない | `has_value()` / `value()` / `error()` を C++ のメソッドとして呼ぶ | `match` と `try` / `catch` |
+| B | 未知のフィールドが無視される | `bad.json` の `"wokers": 8` はエラーにならない。設定の検証では見逃しやすい誤り | なし | 既定でエラー。無視するなら `open schema` |
+| B | スキーマに `enum` がない | 計画どおり未対応 | `matches` と `extern fn` で列挙する | `enum Name { }` と `enum { }` |
+| B | `invariant` から C.C. の関数を呼べない | 検査を通り、C++ のエラー（`'total' was not declared`）になる。`struct` が関数の宣言より先に出力されるため | `parse` の後で別に検査する。エラーのパスは手書きになる | 本体を関数の宣言より後に出力する |
+| B | `where` 付き `vec` フィールドを `for` で回せない | `for u in s.upstreams` が C++ のエラー（`'begin' was not declared`）になる | `.get()` を呼ぶ | `begin` / `end` / `[]` を生成する |
+| B | 条件付き文字列型に既定値を書けない | `level: Level = "info"` はエラー。補足が勧める `Level::try_from("info")` は C++ のエラーになる | フィールドを `T?` にする | 既定値を許可し、補足の文面も直した |
+| C | 標準エラーに出す組み込み関数がない | `print` は標準出力だけ | `extern fn eprint` | 組み込みの `eprint` |
+| C | C++ のエラーがそのまま出る | 上の `begin` の場合、`.c.c` の位置は出るが候補の一覧が数十行続く | なし | 未対応 |
+
+### 未決事項の見直し
+
+`CONCEPT.md` の11章に決定として反映した。
+
+| 未決事項 | 当時の状況 | 決定 |
+|---|---|---|
+| 1. 効果を省略した関数 | 「何でも可」で問題は出なかった | 現状を維持 |
+| 2. 既存 C++ の効果 | `extern fn` で絞る方式は使えた。ただしメソッド呼び出しは対象外 | 生成された `to_json` と `get` 以外のメソッド呼び出しを `unsafe` 扱いにする |
+| 3. スキーマのエラー型 | パス付きで全件返す方式は十分に役立った | パス付きで全件返す |
+| 4. `where` に書ける式 | 計画では算術・比較・論理・`len()`・`self` に絞ったが、検査は効果しか見ておらず制限は効いていない | `where` は計画どおりに絞って検査する。`invariant` は純粋な関数も呼べるようにし、証明の対象外とする |
+| 5. 構文の方向性 | 引数は `i64 amt`、フィールドと `let` は `amt: i64` で混在している | 引数を `amt: i64` に揃える。旧構文はエラーになり、書き方を案内する |
+| 6. C++26 Contracts への依存度 | 責任の報告は呼び出し位置の隠し引数と `.c.c` の条件文に依存している | 自前の実行時チェックを主にする |
+
+### 次に進む候補
+
+コンセプトのフェーズ2までは完了した。残りの候補：
+
+- 6章の既知の制限のうち、実際に困ったもの（`T::parse` の結果の型を書く、`enum` の `match`、`print` の差し替え）
+- JSON Schema の出力
+- Z3 による実行時チェックの削減とテスト自動生成（フェーズ3）

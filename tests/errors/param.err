@@ -1,0 +1,5 @@
+param.c.c:1:6: エラー: 引数は `名前: 型` の順で書きます
+  |
+1 | fn f(i64 amt) {}
+  |      ^^^
+  = 補足: 例: `fn withdraw(a: Account&, amt: i64)`

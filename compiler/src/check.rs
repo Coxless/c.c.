@@ -22,7 +22,7 @@ pub fn builtin(name: &str) -> Option<Builtin> {
         "email_format" => (&[], Some(TypeKind::Prim(Prim::Bool))),
         "parse_json" => (&[], Some(TypeKind::Raw(Box::new(Type { kind: TypeKind::Json, span: Span::default() })))),
         "read_file" => (&["io", "throw"], Some(TypeKind::Prim(Prim::String))),
-        "print" => (&["io"], None),
+        "print" | "eprint" => (&["io"], None),
         "log" => (&["log"], None),
         _ => return None,
     };
@@ -32,12 +32,15 @@ pub fn builtin(name: &str) -> Option<Builtin> {
 pub enum TypeInfo<'a> {
     Refined(&'a TypeDecl),
     Schema(&'a SchemaDecl),
+    Enum(&'a EnumDecl),
 }
 
 /// Name tables shared by the checker and the emitter.
 pub struct Ctx<'a> {
     pub types: HashMap<&'a str, TypeInfo<'a>>,
     pub fns: HashMap<&'a str, &'a FnDecl>,
+    /// Bare enum variants (`role != admin`) by span start, with their C++ spelling.
+    pub variants: HashMap<usize, String>,
 }
 
 impl<'a> Ctx<'a> {
@@ -61,6 +64,16 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    pub fn enum_of(&self, t: &Type) -> Option<&'a EnumDecl> {
+        match &t.kind {
+            TypeKind::Named(n) => match self.types.get(n.as_str()) {
+                Some(TypeInfo::Enum(d)) => Some(d),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// A refined type whose literals can be checked at compile time (`T::of<V>()`).
     pub fn literal_refined(&self, t: &Type) -> Option<&'a TypeDecl> {
         self.refined(t).filter(|d| matches!(d.base.kind, TypeKind::Prim(p) if p.is_integral()))
@@ -75,6 +88,7 @@ pub fn type_str(t: &Type) -> String {
         TypeKind::Vec(t) => format!("vec<{}>", type_str(t)),
         TypeKind::Raw(t) => format!("Raw<{}>", type_str(t)),
         TypeKind::Optional(t) => format!("{}?", type_str(t)),
+        TypeKind::Result(t, e) => format!("{} または {}", type_str(t), type_str(e)),
     }
 }
 
@@ -99,6 +113,17 @@ fn is_literal(e: &Expr) -> bool {
         || matches!(&e.kind, ExprKind::Unary(UnOp::Neg, i) if matches!(i.kind, ExprKind::Float(_)))
 }
 
+/// A literal default of a refined field. Integers are checked at compile time, the
+/// others when `parse` fills in the default.
+fn literal_fits(e: &Expr, base: &Type) -> bool {
+    let TypeKind::Prim(p) = base.kind else { return false };
+    match &e.kind {
+        ExprKind::Str { .. } => p == Prim::String,
+        ExprKind::Float(_) => p == Prim::F64,
+        _ => integral_literal(e) && p.is_integral(),
+    }
+}
+
 /// Something that needs an effect: a call, `?`, or a cpp block.
 struct Need {
     span: Span,
@@ -117,7 +142,7 @@ const NONE: Allow = Allow { self_: false, old: false };
 
 pub fn check<'a>(prog: &'a Program, src: &Source) -> Result<Ctx<'a>, Vec<Diag>> {
     let mut c = Checker {
-        ctx: Ctx { types: HashMap::new(), fns: HashMap::new() },
+        ctx: Ctx { types: HashMap::new(), fns: HashMap::new(), variants: HashMap::new() },
         src_text: src.text,
         diags: Vec::new(),
         scopes: Vec::new(),
@@ -128,7 +153,9 @@ pub fn check<'a>(prog: &'a Program, src: &Source) -> Result<Ctx<'a>, Vec<Diag>> 
         match item {
             Item::Type(d) => c.type_decl(d),
             Item::Schema(d) => c.schema(d),
+            Item::Enum(d) => c.enum_decl(d),
             Item::Fn(d) => c.fn_decl(d),
+            Item::Test(t) => c.fn_decl(&t.func),
             Item::Cpp { .. } => {}
         }
     }
@@ -164,8 +191,9 @@ impl<'a, 's> Checker<'a, 's> {
             let name = match item {
                 Item::Type(d) => &d.name,
                 Item::Schema(d) => &d.name,
+                Item::Enum(d) => &d.name,
                 Item::Fn(d) => &d.name,
-                Item::Cpp { .. } => continue,
+                Item::Test(_) | Item::Cpp { .. } => continue,
             };
             if !seen.insert(&name.text) {
                 self.err(name.span, format!("`{}` はすでに宣言されています", name.text));
@@ -181,10 +209,13 @@ impl<'a, 's> Checker<'a, 's> {
                 Item::Schema(d) => {
                     self.ctx.types.insert(&d.name.text, TypeInfo::Schema(d));
                 }
+                Item::Enum(d) => {
+                    self.ctx.types.insert(&d.name.text, TypeInfo::Enum(d));
+                }
                 Item::Fn(d) => {
                     self.ctx.fns.insert(&d.name.text, d);
                 }
-                Item::Cpp { .. } => {}
+                Item::Test(_) | Item::Cpp { .. } => {}
             }
         }
     }
@@ -223,6 +254,7 @@ impl<'a, 's> Checker<'a, 's> {
             self.push();
             self.bind("self", Some(base.clone()));
             self.pure_expr(cond, Allow { self_: true, old: false }, "where 条件");
+            self.where_expr(cond);
             self.pop();
         }
         for f in fns {
@@ -245,6 +277,85 @@ impl<'a, 's> Checker<'a, 's> {
                     None => self.err(f.span, format!("関数 `{}` が見つかりません", f.text)),
                 },
             }
+        }
+    }
+
+    /// `where` is limited to what an SMT solver can take later on.
+    fn where_expr(&mut self, e: &Expr) {
+        let ok = match &e.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Str { .. } | ExprKind::Bool(_) | ExprKind::SelfValue => {
+                true
+            }
+            ExprKind::Unary(_, a) => {
+                self.where_expr(a);
+                true
+            }
+            ExprKind::Binary(_, a, b) => {
+                self.where_expr(a);
+                self.where_expr(b);
+                true
+            }
+            ExprKind::Compare(first, rest) => {
+                self.where_expr(first);
+                rest.iter().for_each(|(_, r)| self.where_expr(r));
+                true
+            }
+            ExprKind::Call(callee, args)
+                if args.len() == 1 && matches!(&callee.kind, ExprKind::Ident(n) if n == "len") =>
+            {
+                self.where_expr(&args[0]);
+                true
+            }
+            _ => false,
+        };
+        if !ok {
+            self.diags.push(
+                Diag::new(e.span, format!("where には `{}` を書けません", self.text(e.span)))
+                    .note("使えるのはリテラル・self・len()・算術・比較・論理だけです。それ以外の条件は matches か invariant に書いてください"),
+            );
+        }
+    }
+
+    fn enum_decl(&mut self, d: &'a EnumDecl) {
+        if d.variants.is_empty() {
+            self.err(d.span, format!("enum `{}` に値がありません", d.name.text));
+        }
+        let mut seen = HashSet::new();
+        for v in &d.variants {
+            if !seen.insert(v.text.as_str()) {
+                self.err(v.span, format!("値 `{}` が重複しています", v.text));
+            }
+        }
+    }
+
+    /// `e` is used as a value of type `t`: a bare name means a variant of that enum.
+    fn variant(&mut self, e: &Expr, t: &Type) {
+        let inner = match &t.kind {
+            TypeKind::Optional(i) => i.as_ref(),
+            _ => t,
+        };
+        let (Some(d), ExprKind::Ident(n)) = (self.ctx.enum_of(inner), &e.kind) else { return };
+        if self.scopes.iter().any(|s| s.contains_key(n)) {
+            return;
+        }
+        if d.variants.iter().any(|v| v.text == *n) {
+            let cpp = format!("{}::{}", crate::emit::mangle(&d.name.text), crate::emit::mangle(n));
+            self.ctx.variants.insert(e.span.lo, cpp);
+        } else {
+            let names = d.variants.iter().map(|v| v.text.as_str()).collect::<Vec<_>>().join(", ");
+            self.diags.push(
+                Diag::new(e.span, format!("`{n}` は {} の値ではありません", d.name.text))
+                    .note(format!("使える値: {names}")),
+            );
+        }
+    }
+
+    fn link_variants(&mut self, a: &Expr, b: &Expr) {
+        if let Some(t) = self.type_of(a) {
+            self.variant(b, &t);
+        }
+        if let Some(t) = self.type_of(b) {
+            self.variant(a, &t);
         }
     }
 
@@ -279,7 +390,12 @@ impl<'a, 's> Checker<'a, 's> {
                 self.push();
                 self.pure_expr(def, NONE, "既定値");
                 self.pop();
-                if !matches!(def.kind, ExprKind::List(_)) && f.cond.is_none() && f.matches.is_none() {
+                let checked_on_parse = self.ctx.refined(inner).is_some_and(|d| literal_fits(def, &d.base));
+                if !matches!(def.kind, ExprKind::List(_))
+                    && f.cond.is_none()
+                    && f.matches.is_none()
+                    && !checked_on_parse
+                {
                     self.check_assign(def, inner);
                 }
             }
@@ -304,8 +420,10 @@ impl<'a, 's> Checker<'a, 's> {
             );
         }
         if name == "main" {
-            if !d.params.is_empty() {
-                self.err(d.name.span, "main は引数を取れません");
+            let args_only = matches!(d.params.as_slice(), [p] if !p.by_ref && matches!(&p.ty.kind,
+                TypeKind::Vec(t) if t.kind == TypeKind::Prim(Prim::String)));
+            if !d.params.is_empty() && !args_only {
+                self.err(d.name.span, "main の引数は `args: vec<string>` だけにしてください");
             }
             if !matches!(d.ret.as_ref().map(|t| &t.kind), None | Some(TypeKind::Prim(Prim::I32 | Prim::I64))) {
                 self.err(d.ret.as_ref().unwrap().span, "main の戻り値は i32 にしてください");
@@ -394,6 +512,12 @@ impl<'a, 's> Checker<'a, 's> {
     /// Expression in statement position, where a trailing `?` is allowed.
     fn top_expr(&mut self, e: &Expr) {
         if let ExprKind::Try(inner) = &e.kind {
+            if self.type_of(inner).is_some_and(|t| !matches!(t.kind, TypeKind::Result(..))) {
+                self.diags.push(
+                    Diag::new(e.span, "`?` を使えるのは T::parse / T::try_from の結果だけです")
+                        .note("T? の値には match の some / none を使ってください"),
+                );
+            }
             self.needs.push(Need {
                 span: e.span,
                 what: "`?`（失敗すると例外を送出します）".into(),
@@ -466,12 +590,99 @@ impl<'a, 's> Checker<'a, 's> {
                 self.block(body, f);
             }
             StmtKind::Block(b) => self.block(b, f),
+            StmtKind::Match { subject, arms } => self.match_stmt(subject, arms, s.span, f),
+            StmtKind::Try { body, var, handler } => {
+                // Whatever the body throws is caught here, so `throw` does not reach the function.
+                let saved = std::mem::take(&mut self.needs);
+                self.block(body, f);
+                let inner = std::mem::replace(&mut self.needs, saved);
+                for mut n in inner {
+                    n.effects.retain(|e| *e != "throw");
+                    if !n.effects.is_empty() {
+                        self.needs.push(n);
+                    }
+                }
+                self.push();
+                self.bind(&var.text, Some(Type { kind: TypeKind::Prim(Prim::String), span: var.span }));
+                self.block(handler, f);
+                self.pop();
+            }
+            StmtKind::With { effect, handler, entries, body } => {
+                if effect.text != "io" {
+                    self.err(effect.span, format!("効果 `{}` は差し替えられません（今は io だけです）", effect.text));
+                }
+                if handler.text != "MemoryFs" {
+                    self.err(
+                        handler.span,
+                        format!("ハンドラ `{}` はありません（今は MemoryFs だけです）", handler.text),
+                    );
+                }
+                for (k, v) in entries {
+                    self.expr(k, NONE);
+                    self.expr(v, NONE);
+                }
+                self.block(body, f);
+            }
+            StmtKind::Expect(cond) => self.expr(cond, NONE),
             StmtKind::Cpp(_) => self.needs.push(Need {
                 span: Span { lo: s.span.lo, hi: s.span.lo + 3 },
                 what: "cpp ブロック".into(),
                 effects: vec!["unsafe"],
                 note: Some("cpp ブロックの中身は検査できないため unsafe 扱いです".into()),
             }),
+        }
+    }
+
+    fn match_stmt(&mut self, subject: &'a Expr, arms: &'a [MatchArm], span: Span, f: &'a FnDecl) {
+        self.expr(subject, NONE);
+        let subject_ty = self.type_of(subject);
+        let has = |k: ArmKind| arms.iter().filter(|a| a.kind == k).count();
+        let result_arms = has(ArmKind::Ok) + has(ArmKind::Err) > 0;
+        let option_arms = has(ArmKind::Some) + has(ArmKind::None) > 0;
+        if result_arms && option_arms {
+            self.err(span, "ok / err と some / none を同じ match に混ぜられません");
+        } else if !result_arms && !option_arms {
+            self.err(span, "match に分岐がありません");
+        } else {
+            let (a, b) = if result_arms { (ArmKind::Ok, ArmKind::Err) } else { (ArmKind::Some, ArmKind::None) };
+            let label = |k| match k {
+                ArmKind::Ok => "ok",
+                ArmKind::Err => "err",
+                ArmKind::Some => "some",
+                ArmKind::None => "none",
+            };
+            for k in [a, b] {
+                match has(k) {
+                    1 => {}
+                    0 => self.err(span, format!("match に {} の分岐がありません", label(k))),
+                    _ => self.err(span, format!("match の {} の分岐が重複しています", label(k))),
+                }
+            }
+            let fits = match subject_ty.as_ref().map(|t| &t.kind) {
+                None => true,
+                Some(TypeKind::Result(..)) => result_arms,
+                Some(TypeKind::Optional(_)) => option_arms,
+                Some(_) => false,
+            };
+            if !fits {
+                let shown = type_str(subject_ty.as_ref().unwrap());
+                let arms = if result_arms { "ok / err" } else { "some / none" };
+                self.err(subject.span, format!("{shown} 型の値は {arms} で match できません"));
+            }
+        }
+        for arm in arms {
+            let ty = match (arm.kind, subject_ty.as_ref().map(|t| &t.kind)) {
+                (ArmKind::Ok, Some(TypeKind::Result(t, _))) => Some((**t).clone()),
+                (ArmKind::Err, Some(TypeKind::Result(_, e))) => Some((**e).clone()),
+                (ArmKind::Some, Some(TypeKind::Optional(t))) => Some((**t).clone()),
+                _ => None,
+            };
+            self.push();
+            if let Some(b) = &arm.binder {
+                self.bind(&b.text, ty);
+            }
+            self.block(&arm.body, f);
+            self.pop();
         }
     }
 
@@ -501,8 +712,14 @@ impl<'a, 's> Checker<'a, 's> {
             | ExprKind::Str { .. }
             | ExprKind::Bool(_)
             | ExprKind::None
-            | ExprKind::Ident(_)
-            | ExprKind::Path(..) => {}
+            | ExprKind::Ident(_) => {}
+            ExprKind::Path(t, m) => {
+                if let Some(TypeInfo::Enum(d)) = self.ctx.types.get(t.as_str()) {
+                    if !d.variants.iter().any(|v| v.text == *m) {
+                        self.err(e.span, format!("`{m}` は {t} の値ではありません"));
+                    }
+                }
+            }
             ExprKind::SelfValue => {
                 if !allow.self_ {
                     self.err(e.span, "self は where 条件の中でだけ使えます");
@@ -522,6 +739,11 @@ impl<'a, 's> Checker<'a, 's> {
             ExprKind::Compare(first, rest) => {
                 self.expr(first, allow);
                 rest.iter().for_each(|(_, r)| self.expr(r, allow));
+                let mut lhs = first.as_ref();
+                for (_, r) in rest {
+                    self.link_variants(lhs, r);
+                    lhs = r;
+                }
             }
             ExprKind::Old(inner) => {
                 if !allow.old {
@@ -600,17 +822,42 @@ impl<'a, 's> Checker<'a, 's> {
                 }
             }
             ExprKind::Path(t, m) => {
-                let generated = self.ctx.types.contains_key(t.as_str()) && matches!(m.as_str(), "parse" | "try_from");
-                if !generated {
+                if self.generated_result(t, m).is_none() {
                     self.needs.push(unsafe_need(
                         format!("`{t}::{m}` の呼び出し"),
                         "C.C. で宣言されていない関数は unsafe 扱いです".into(),
                     ));
                 }
             }
-            // Method calls on C++ values are not tracked in the prototype.
+            ExprKind::Field(obj, m) => {
+                // What the compiler generated is known to be pure. Anything else is C++
+                // whose effects (a throwing `at()`, say) nothing here can see.
+                let generated = self.type_of(obj).is_some_and(|t| match m.as_str() {
+                    "to_json" => self.ctx.schema(&t).is_some(),
+                    "get" => self.ctx.refined(&t).is_some(),
+                    _ => false,
+                });
+                if !generated {
+                    self.needs.push(unsafe_need(
+                        format!("メソッド `{m}` の呼び出し"),
+                        "C++ のメソッドは効果が分からないため unsafe 扱いです。結果の取り出しには match を使うか、extern fn で包んでください"
+                            .into(),
+                    ));
+                }
+            }
             _ => {}
         }
+    }
+
+    /// The type of `T::m(...)` when the compiler generates it.
+    fn generated_result(&self, t: &str, m: &str) -> Option<TypeKind> {
+        let err = match (self.ctx.types.get(t)?, m) {
+            (TypeInfo::Schema(_), "parse") => "ParseError",
+            (TypeInfo::Refined(_), "try_from") => "RefineError",
+            _ => return None,
+        };
+        let named = |n: &str| Box::new(Type { kind: TypeKind::Named(n.to_string()), span: Span::default() });
+        Some(TypeKind::Result(named(t), named(err)))
     }
 
     // --------------------------------------------------------------- typing
@@ -629,17 +876,14 @@ impl<'a, 's> Checker<'a, 's> {
                     Some(b) => b.ret.and_then(mk),
                     None => self.ctx.fns.get(n.as_str()).and_then(|d| d.ret.clone()),
                 },
+                ExprKind::Path(t, m) => self.generated_result(t, m).and_then(mk),
                 _ => None,
             },
-            ExprKind::Try(inner) => match &inner.kind {
-                ExprKind::Call(callee, _) => match &callee.kind {
-                    ExprKind::Path(t, m)
-                        if self.ctx.types.contains_key(t.as_str()) && (m == "parse" || m == "try_from") =>
-                    {
-                        mk(TypeKind::Named(t.clone()))
-                    }
-                    _ => None,
-                },
+            ExprKind::Path(t, _) if matches!(self.ctx.types.get(t.as_str()), Some(TypeInfo::Enum(_))) => {
+                mk(TypeKind::Named(t.clone()))
+            }
+            ExprKind::Try(inner) => match self.type_of(inner)?.kind {
+                TypeKind::Result(t, _) => Some(*t),
                 _ => None,
             },
             ExprKind::Binary(op, a, _) if !matches!(op, BinOp::And | BinOp::Or) => {
@@ -657,8 +901,16 @@ impl<'a, 's> Checker<'a, 's> {
 
     /// `e` is used where a value of type `target` is expected.
     fn check_assign(&mut self, e: &Expr, target: &Type) {
+        self.variant(e, target);
         let target_s = type_str(target);
         let actual = self.type_of(e);
+        if matches!(actual.as_ref().map(|t| &t.kind), Some(TypeKind::Result(..))) {
+            self.diags.push(
+                Diag::new(e.span, format!("失敗するかもしれない結果を {target_s} として使えません"))
+                    .note("`?` で失敗を送出するか、match の ok / err で分けてください"),
+            );
+            return;
+        }
         if let Some(TypeKind::Raw(_)) = actual.as_ref().map(|t| &t.kind) {
             if !matches!(target.kind, TypeKind::Raw(_)) {
                 let parse = if self.ctx.schema(target).is_some() {
@@ -686,7 +938,7 @@ impl<'a, 's> Checker<'a, 's> {
                         e.span,
                         format!("リテラル {} が {target_s} の条件を満たすかは静的に検査できません", self.text(e.span)),
                     )
-                    .note(format!("{target_s}::try_from({}) で明示的に変換してください", self.text(e.span))),
+                    .note(format!("{target_s}::try_from({})? で明示的に変換してください", self.text(e.span))),
                 );
             }
             return;
@@ -696,7 +948,7 @@ impl<'a, 's> Checker<'a, 's> {
                 self.diags.push(
                     Diag::new(e.span, format!("{} 型の値を {target_s} に暗黙変換できません", type_str(&t))).note(
                         format!(
-                        "条件は実行時にしか確かめられないため、{target_s}::try_from(...) で明示的に変換してください"
+                        "条件は実行時にしか確かめられないため、{target_s}::try_from(...)? で明示的に変換してください"
                     ),
                     ),
                 );

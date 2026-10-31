@@ -1,0 +1,4 @@
+exit: 3
+--- stdout
+--- stderr
+エラー: ファイルを開けません: missing.json

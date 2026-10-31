@@ -6,11 +6,11 @@ schema Item {
   price: i64 where self >= 0;
 }
 
-fn register(Percent p) -> i64 effects() {
+fn register(p: Percent) -> i64 effects() {
   return p * 2;
 }
 
-fn total(vec<Item> items) -> i64 effects() {
+fn total(items: vec<Item>) -> i64 effects() {
   let sum = 0;
   for it in items {
     sum += it.price;

@@ -1,0 +1,8 @@
+{
+  "name": "edge-2",
+  "listen": 8443,
+  "upstreams": [
+    { "host": "app-1.internal", "port": 8080 },
+    { "host": " app-1.internal ", "port": 8080 }
+  ]
+}

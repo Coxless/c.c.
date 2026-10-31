@@ -1,0 +1,16 @@
+exit: 0
+--- stdout
+test 既定値が入り、余白が取り除かれる
+  ok
+test 443 番は tls がないと通らない
+  ok
+test 重複した upstream は通らない
+  ok
+test 未知のフィールドは通らない
+  ok
+test ファイルがないと失敗を送出する
+  ok
+test 重みの割合
+  ok
+6 件中 6 件成功
+--- stderr

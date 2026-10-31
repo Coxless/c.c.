@@ -14,6 +14,7 @@ class Email {
   const std::string& get() const { return v_; }
   operator const std::string&() const { return v_; }
   friend bool operator==(const Email&, const Email&) = default;
+  friend bool operator==(const Email& a, const std::string& b) { return a.v_ == b; }
  private:
   explicit Email(std::string v) : v_(std::move(v)) {}
   std::string v_;
@@ -33,6 +34,7 @@ struct Address {
     const std::string& get() const { return v_; }
     operator const std::string&() const { return v_; }
     friend bool operator==(const city_t&, const city_t&) = default;
+    friend bool operator==(const city_t& a, const std::string& b) { return a.v_ == b; }
    private:
     explicit city_t(std::string v) : v_(std::move(v)) {}
     std::string v_;
@@ -50,6 +52,7 @@ struct Address {
     const std::string& get() const { return v_; }
     operator const std::string&() const { return v_; }
     friend bool operator==(const zip_t&, const zip_t&) = default;
+    friend bool operator==(const zip_t& a, const std::string& b) { return a.v_ == b; }
    private:
     explicit zip_t(std::string v) : v_(std::move(v)) {}
     std::string v_;
@@ -79,6 +82,7 @@ struct Address {
     } else {
       ::cc::missing(::cc::join(path, "zip"), errs);
     }
+    ::cc::reject_unknown(j, path, {"city", "zip"}, errs);
     if (errs.size() != cc_n) return std::nullopt;
     Address out{std::move(*f_city), std::move(*f_zip)};
     return out;
@@ -133,6 +137,7 @@ struct User {
     const std::string& get() const { return v_; }
     operator const std::string&() const { return v_; }
     friend bool operator==(const name_t&, const name_t&) = default;
+    friend bool operator==(const name_t& a, const std::string& b) { return a.v_ == b; }
    private:
     explicit name_t(std::string v) : v_(std::move(v)) {}
     std::string v_;
@@ -171,6 +176,9 @@ struct User {
     const std::vector<std::string>& get() const { return v_; }
     operator const std::vector<std::string>&() const { return v_; }
     friend bool operator==(const tags_t&, const tags_t&) = default;
+    auto begin() const { return v_.begin(); }
+    auto end() const { return v_.end(); }
+    const auto& operator[](std::int64_t i) const { return v_[i]; }
    private:
     explicit tags_t(std::vector<std::string> v) : v_(std::move(v)) {}
     std::vector<std::string> v_;
@@ -183,8 +191,7 @@ struct User {
   tags_t tags;
   std::optional<Address> address;
 
-#line 18 "user.c.c"
-  bool cc_invariant_0() const { return age == std::nullopt || age >= 13; }
+  bool cc_invariant_0() const;
 
   static std::optional<User> parse_at(const ::cc::Json& j, const std::string& path, std::vector<::cc::FieldError>& errs) {
     if (!::cc::expect_object(j, path, errs)) return std::nullopt;
@@ -236,6 +243,7 @@ struct User {
     if (const auto* v = ::cc::field(j, "address")) {
       f_address = ::cc::decode<Address>(*v, ::cc::join(path, "address"), errs);
     }
+    ::cc::reject_unknown(j, path, {"id", "name", "email", "age", "tags", "address"}, errs);
     if (errs.size() != cc_n) return std::nullopt;
     User out{std::move(*f_id), std::move(*f_name), std::move(*f_email), std::move(f_age), std::move(*f_tags), std::move(f_address)};
     if (!out.cc_invariant_0()) errs.push_back(::cc::invariant_failure(path, "13歳以上", "age == none || age >= 13"));
@@ -264,6 +272,9 @@ struct User {
 void greet(User u) noexcept;
 void handle(::cc::Raw<::cc::Json> body);
 int cc_main() noexcept;
+
+#line 18 "user.c.c"
+inline bool User::cc_invariant_0() const { return age == std::nullopt || age >= 13; }
 
 #line 21 "user.c.c"
 void greet(User u) noexcept {

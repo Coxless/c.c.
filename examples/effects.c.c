@@ -6,11 +6,11 @@ schema Config {
 }
 
 // Pure apart from throwing: no io here, guaranteed by the signature.
-fn parse_config(string text) -> Config effects(throw) {
+fn parse_config(text: string) -> Config effects(throw) {
   return Config::parse(parse_json(text))?;
 }
 
-fn load_config(string path) -> Config effects(io, throw) {
+fn load_config(path: string) -> Config effects(io, throw) {
   return parse_config(read_file(path));
 }
 

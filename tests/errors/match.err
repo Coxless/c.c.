@@ -1,0 +1,36 @@
+match.c.c:3:3: エラー: match に err の分岐がありません
+  |
+3 |   match Port::try_from(n) {
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+match.c.c:8:9: エラー: i64 型の値は ok / err で match できません
+  |
+8 |   match n {
+  |         ^
+
+match.c.c:14:3: エラー: ok / err と some / none を同じ match に混ぜられません
+   |
+14 |   match n {
+   |   ^^^^^^^^^
+
+match.c.c:20:17: エラー: 失敗するかもしれない結果を Port として使えません
+   |
+20 |   let p: Port = Port::try_from(n);
+   |                 ^^^^^^^^^^^^^^^^^
+   = 補足: `?` で失敗を送出するか、match の ok / err で分けてください
+
+match.c.c:21:11: エラー: `?` を使えるのは T::parse / T::try_from の結果だけです
+   |
+21 |   let q = n?;
+   |           ^^
+   = 補足: T? の値には match の some / none を使ってください
+
+match.c.c:21:11: エラー: `?`（失敗すると例外を送出します）には効果 throw が必要ですが、`d` は effects() しか宣言していません
+   |
+21 |   let q = n?;
+   |           ^^
+
+match.c.c:25:5: エラー: `read_file` の呼び出しには効果 io が必要ですが、`e` は effects() しか宣言していません
+   |
+25 |     read_file("x");
+   |     ^^^^^^^^^^^^^^

@@ -5,10 +5,12 @@ use crate::diag::Diag;
 use crate::lexer::{Tok, Token};
 
 pub fn parse(tokens: Vec<Token>) -> Result<Program, Diag> {
-    let mut p = Parser { toks: tokens, pos: 0 };
+    let mut p = Parser { toks: tokens, pos: 0, enum_owner: None, hoisted: Vec::new(), in_test: false };
     let mut items = Vec::new();
     while !p.at_eof() {
-        items.push(p.item()?);
+        let item = p.item()?;
+        items.extend(p.hoisted.drain(..).map(Item::Enum));
+        items.push(item);
     }
     Ok(Program { items })
 }
@@ -16,6 +18,11 @@ pub fn parse(tokens: Vec<Token>) -> Result<Program, Diag> {
 struct Parser {
     toks: Vec<Token>,
     pos: usize,
+    /// Name for an inline `enum { ... }` in the field being parsed.
+    enum_owner: Option<String>,
+    /// Inline enums of the current item, to be declared before it.
+    hoisted: Vec<EnumDecl>,
+    in_test: bool,
 }
 
 type PResult<T> = Result<T, Diag>;
@@ -131,15 +138,45 @@ impl Parser {
         if self.eat_kw("type") {
             return self.type_decl(lo).map(Item::Type);
         }
+        if self.is_kw("open") && matches!(self.nth(1), Tok::Ident(s) if s == "schema") {
+            self.bump();
+            self.bump();
+            return self.schema(lo, true).map(Item::Schema);
+        }
         if self.eat_kw("schema") {
-            return self.schema(lo).map(Item::Schema);
+            return self.schema(lo, false).map(Item::Schema);
+        }
+        if self.eat_kw("enum") {
+            let name = self.ident()?;
+            let (variants, end) = self.enum_body()?;
+            return Ok(Item::Enum(EnumDecl { name, variants, span: lo.to(end) }));
+        }
+        if self.is_kw("test") && matches!(self.nth(1), Tok::Str { .. }) {
+            self.bump();
+            let label = self.string()?;
+            self.in_test = true;
+            let body = self.block()?;
+            self.in_test = false;
+            let span = lo.to(self.prev_span());
+            let func = FnDecl {
+                name: Name { text: "test".into(), span: lo },
+                is_contract: false,
+                params: Vec::new(),
+                ret: None,
+                effects: None,
+                pres: Vec::new(),
+                posts: Vec::new(),
+                body: Some(body),
+                span,
+            };
+            return Ok(Item::Test(TestDecl { label, func }));
         }
         let is_extern = self.eat_kw("extern");
         let is_contract = self.eat_kw("contract");
         if self.eat_kw("fn") {
             return self.fn_decl(lo, is_contract, is_extern).map(Item::Fn);
         }
-        Err(self.unexpected("宣言（type / schema / fn / contract fn / cpp）"))
+        Err(self.unexpected("宣言（type / schema / enum / fn / contract fn / test / cpp）"))
     }
 
     fn type_decl(&mut self, lo: Span) -> PResult<TypeDecl> {
@@ -160,7 +197,21 @@ impl Parser {
         Ok(TypeDecl { name, base, cond, matches, span: lo.to(end) })
     }
 
-    fn schema(&mut self, lo: Span) -> PResult<SchemaDecl> {
+    /// `{ a, b }`
+    fn enum_body(&mut self) -> PResult<(Vec<Name>, Span)> {
+        self.expect("{")?;
+        let mut variants = Vec::new();
+        while !self.is("}") {
+            variants.push(self.ident()?);
+            if !self.eat(",") {
+                break;
+            }
+        }
+        let end = self.expect("}")?;
+        Ok((variants, end))
+    }
+
+    fn schema(&mut self, lo: Span, open: bool) -> PResult<SchemaDecl> {
         let name = self.ident()?;
         self.expect("{")?;
         let (mut fields, mut invariants) = (Vec::new(), Vec::new());
@@ -170,17 +221,19 @@ impl Parser {
                 invariants.push(self.clause(lo)?);
                 self.expect(";")?;
             } else {
-                fields.push(self.field()?);
+                fields.push(self.field(&name.text)?);
             }
         }
         let end = self.expect("}")?;
-        Ok(SchemaDecl { name, fields, invariants, span: lo.to(end) })
+        Ok(SchemaDecl { open, name, fields, invariants, span: lo.to(end) })
     }
 
-    fn field(&mut self) -> PResult<Field> {
+    fn field(&mut self, schema: &str) -> PResult<Field> {
         let name = self.ident()?;
         self.expect(":")?;
+        self.enum_owner = Some(format!("{schema}_{}", name.text));
         let ty = self.ty()?;
+        self.enum_owner = None;
         let (mut cond, mut matches, mut transform, mut default) = (None, None, None, None);
         loop {
             if self.eat_kw("where") {
@@ -213,10 +266,14 @@ impl Parser {
         self.expect("(")?;
         let mut params = Vec::new();
         while !self.is(")") {
+            let name = self.ident()?;
+            if !self.eat(":") {
+                return Err(Diag::new(name.span, "引数は `名前: 型` の順で書きます")
+                    .note("例: `fn withdraw(a: Account&, amt: i64)`"));
+            }
             let ty = self.ty()?;
             let by_ref = self.eat("&");
-            let name = self.ident()?;
-            params.push(Param { ty, by_ref, name });
+            params.push(Param { name, ty, by_ref });
             if !self.eat(",") {
                 break;
             }
@@ -272,6 +329,16 @@ impl Parser {
         let name = self.ident()?;
         let mut span = name.span;
         let kind = match name.text.as_str() {
+            "enum" if self.is("{") => {
+                let Some(owner) = self.enum_owner.take() else {
+                    return Err(Diag::new(name.span, "`enum { ... }` はスキーマのフィールドにだけ書けます")
+                        .note("それ以外の場所では `enum Name { ... }` を宣言して使ってください"));
+                };
+                let (variants, end) = self.enum_body()?;
+                span = span.to(end);
+                self.hoisted.push(EnumDecl { name: Name { text: owner.clone(), span: name.span }, variants, span });
+                TypeKind::Named(owner)
+            }
             "vec" | "Raw" => {
                 self.expect("<")?;
                 let inner = Box::new(self.ty()?);
@@ -342,6 +409,53 @@ impl Parser {
         } else if self.eat_kw("while") {
             let cond = self.expr()?;
             StmtKind::While { cond, body: self.block()? }
+        } else if self.eat_kw("match") {
+            let subject = self.expr()?;
+            self.expect("{")?;
+            let mut arms = Vec::new();
+            while !self.is("}") {
+                arms.push(self.match_arm()?);
+            }
+            self.expect("}")?;
+            StmtKind::Match { subject, arms }
+        } else if self.is_kw("try") && matches!(self.nth(1), Tok::Punct("{")) {
+            self.bump();
+            let body = self.block()?;
+            if !self.eat_kw("catch") {
+                return Err(self.unexpected("`catch` "));
+            }
+            let var = self.ident()?;
+            StmtKind::Try { body, var, handler: self.block()? }
+        } else if self.is_kw("with") && matches!(self.nth(2), Tok::Punct("=")) {
+            if !self.in_test {
+                return Err(Diag::new(lo, "with は test の中でだけ使えます"));
+            }
+            self.bump();
+            let effect = self.ident()?;
+            self.expect("=")?;
+            let handler = self.ident()?;
+            self.expect("{")?;
+            let mut entries = Vec::new();
+            while !self.is("}") {
+                self.expect("{")?;
+                let key = self.expr()?;
+                self.expect(",")?;
+                let value = self.expr()?;
+                self.expect("}")?;
+                entries.push((key, value));
+                if !self.eat(",") {
+                    break;
+                }
+            }
+            self.expect("}")?;
+            StmtKind::With { effect, handler, entries, body: self.block()? }
+        } else if self.in_test && self.is_kw("expect") && matches!(self.nth(1), Tok::Punct("(")) {
+            self.bump();
+            self.bump();
+            let cond = self.expr()?;
+            self.expect(")")?;
+            self.expect(";")?;
+            StmtKind::Expect(cond)
         } else {
             let target = self.expr()?;
             let op = match self.tok() {
@@ -364,6 +478,31 @@ impl Parser {
             kind
         };
         Ok(Stmt { kind, span: lo.to(self.prev_span()) })
+    }
+
+    /// `ok(v) { ... }`, `err(e) { ... }`, `some(x) { ... }`, `none { ... }`
+    fn match_arm(&mut self) -> PResult<MatchArm> {
+        let word = self.ident()?;
+        let kind = match word.text.as_str() {
+            "ok" => ArmKind::Ok,
+            "err" => ArmKind::Err,
+            "some" => ArmKind::Some,
+            "none" => ArmKind::None,
+            other => {
+                return Err(Diag::new(word.span, format!("`{other}` は match の分岐に使えません"))
+                    .note("使えるのは ok(v) / err(e) / some(x) / none です"))
+            }
+        };
+        let binder = if kind == ArmKind::None {
+            None
+        } else {
+            self.expect("(")?;
+            let b = self.ident()?;
+            self.expect(")")?;
+            Some(b)
+        };
+        let body = self.block()?;
+        Ok(MatchArm { kind, binder, span: word.span.to(body.span), body })
     }
 
     fn if_stmt(&mut self, lo: Span) -> PResult<Stmt> {

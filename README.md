@@ -28,6 +28,8 @@ cargo build
 ./target/debug/ccc run   ../examples/user.c.c           # 変換・ビルドして実行
 ./target/debug/ccc build ../examples/user.c.c -o user.cpp  # C++ に変換
 ./target/debug/ccc check ../examples/user.c.c           # 検査だけ
+./target/debug/ccc test  ../examples/confcheck.c.c      # test ブロックを実行
+./target/debug/ccc run   ../examples/confcheck.c.c -- ../examples/confcheck/good.json  # 引数を渡して実行
 ```
 
 生成した C++ を自分でビルドする場合は `runtime/` と `third_party/` をインクルードパスに加えます。
@@ -44,6 +46,7 @@ g++ -std=c++23 -Iruntime -Ithird_party user.cpp -o user
 | [examples/withdraw.c.c](examples/withdraw.c.c) | `pre` / `post` / `old()` と、違反の責任（呼び出し側／実装側）の報告 |
 | [examples/user.c.c](examples/user.c.c) | `schema` から struct・`parse()`・`to_json()` を生成。エラーは全件報告 |
 | [examples/effects.c.c](examples/effects.c.c) | 効果の宣言と `?` |
+| [examples/confcheck.c.c](examples/confcheck.c.c) | 設定ファイルを検証する CLI。`enum`、`match`、`try`、`test` を使った実用例 |
 | [examples/hand/](examples/hand/) | トランスパイラなしで手書きした「生成コードの完成形」（ステップ0） |
 
 違反レポートの例（`examples/withdraw.c.c`）:
@@ -63,6 +66,7 @@ contract violation: pre「残高が足りる」
 ```cpp
 type Port  = u16 where 1 <= self <= 65535;     // 条件付きの型（ブランド型）
 type Email = string matches email_format;       // 述語関数による条件
+enum Role { admin, member }                     // 列挙（enum { a, b } はフィールドにも直接書ける）
 
 schema User {
   id:    u64         where self > 0;
@@ -72,29 +76,56 @@ schema User {
   tags:  vec<string> where len(self) <= 3 = [];  // 既定値
   invariant(age == none || age >= 13, "13歳以上");
 }
+open schema Event { id: u64; }                  // 未知のフィールドを許す
 
-contract fn withdraw(Account& a, i64 amt) -> i64
+contract fn withdraw(a: Account&, amt: i64) -> i64
   effects(log)
   pre(amt > 0, "金額は正")
   post(r: r == amt)
   post(a.balance == old(a.balance) - amt)
 { ... }
 
-fn greet(User u) effects(io) { ... }
-extern fn open_account(i64 b) -> Account effects();   // C++ で実装された関数の宣言
+fn greet(u: User) effects(io) { ... }
+fn main(args: vec<string>) -> i32 effects(io) { ... } // 引数は省略できる。プログラム名は含まない
+extern fn open_account(b: i64) -> Account effects();  // C++ で実装された関数の宣言
 cpp { /* 生の C++（逃げ道） */ }
+test "名前" { expect(1 + 1 == 2); }
 ```
 
 - 型: `i32` `i64`（`int`）`u8` `u16` `u32` `u64` `f64` `bool` `string`（`str`）`vec<T>` `T?` `Json` `Raw<T>`
-- 文: `let`（`let x: T = ...` も可）、代入（`=` `+=` など）、`return`、`if` / `else`、`for x in xs`、`for i in a..b`、`while`、`cpp { ... }`
+- 文: `let`（`let x: T = ...` も可）、代入（`=` `+=` など）、`return`、`if` / `else`、`for x in xs`、`for i in a..b`、`while`、`match`、`try` / `catch`、`cpp { ... }`
 - 式: 算術、比較（`1 <= x <= 9` のような連鎖も可）、論理、関数呼び出し、`T::parse` / `T::try_from`、フィールド・添字・メソッド呼び出し、`none`、`[a, b]`、`R"(...)"`
-- 組み込み関数: `len` `trim` `email_format` `parse_json`（純粋）、`print`（io）、`log`（log）、`read_file`（io, throw）
+- 組み込み関数: `len` `trim` `email_format` `parse_json`（純粋）、`print` `eprint`（io）、`log`（log）、`read_file`（io, throw）
 
 ### 値の契約
 
 - `Port p = 8080;` に相当する `let p: Port = 8080;` は `Port::of<8080>()` になり、条件はコンパイル時に検査されます
 - 静的に分からない値（`n + 1` など）から暗黙には変換できません。`Port::try_from(...)` を使います
 - 外部入力は `Raw<Json>` で受け取り、`User::parse(...)` を通したものだけが `User` になります。`Raw<Json>` を `User` として渡すとコンパイルエラーです
+- スキーマにない JSON フィールドはエラーです。`open schema` にすると無視します
+- `where` に書けるのはリテラル・`self`・`len()`・算術・比較・論理だけです。それ以外の条件は `matches` か `invariant` に書きます。`invariant` からは純粋な関数を呼べます
+
+### 失敗の扱い
+
+```cpp
+let user = User::parse(body)?;          // 失敗を送出する（throw が必要）
+
+match User::parse(body) {               // ok / err の両方が必要
+  ok(user) { greet(user); }
+  err(e)   { eprint(e); }
+}
+
+match user.age {                        // T? は some / none
+  some(age) { print(age); }
+  none      { print("年齢なし"); }
+}
+
+try {                                   // 送出された失敗を文字列で受け取る。中の throw は外に出ない
+  let text = read_file(path);
+} catch message {
+  eprint(message);
+}
+```
 
 ### 関数の契約
 
@@ -105,15 +136,28 @@ cpp { /* 生の C++（逃げ道） */ }
 
 - 関数が呼ぶものの効果は、その関数が `effects(...)` で宣言した効果に含まれていなければなりません
 - `effects(...)` を省略した関数は検査されず、何でもできます（既存コードから段階的に導入するため）
-- 効果が分からないもの（`effects` を省略した関数、`extern fn` で宣言していない C++ 関数、関数内の `cpp { }`）を呼ぶには `unsafe` が必要です
+- 効果が分からないもの（`effects` を省略した関数、`extern fn` で宣言していない C++ 関数、関数内の `cpp { }`、C++ のメソッド）を呼ぶには `unsafe` が必要です。生成された `to_json` と `get` は純粋です
 - `?` は失敗時に例外を送出するので `throw` が必要です。`throw` を宣言していない関数には `noexcept` が付きます
 - `where` / `pre` / `post` / `invariant` の条件と既定値は純粋でなければなりません
 
-## テスト
+### テスト
+
+```cpp
+test "設定を読める" {
+  with io = MemoryFs{ {"a.json", R"({"port": 8080})"} } {   // read_file を差し替える（test の中だけ）
+    let c = load_config("a.json");
+    expect(c.port == 8080);                                  // 外れても続きを実行し、失敗として数える
+  }
+}
+```
+
+`ccc test` で実行します。テストごとに別プロセスで動くので、契約違反で止まっても残りのテストは実行されます。テストが1件でも失敗すると終了コードは 1 です。`ccc run` では `test` は無視されます。
+
+## このリポジトリのテスト
 
 ```sh
 cd compiler
-cargo test            # スナップショット・実行・エラー・手書き版のテスト
+cargo test            # スナップショット・実行・エラー・手書き版・test ブロックのテスト
 UPDATE=1 cargo test   # 期待値ファイルを更新する
 ```
 
@@ -123,6 +167,7 @@ UPDATE=1 cargo test   # 期待値ファイルを更新する
 | `tests/run/` | 生成 C++ をビルド・実行した結果（`expected/*.out`） |
 | `tests/errors/` | 不正な `.c.c` に対するエラーメッセージ |
 | `tests/hand/` | `examples/hand/` の実行結果 |
+| `tests/test/` | `test` ブロックの実行結果（`expected/*.out`） |
 
 ## 構成
 

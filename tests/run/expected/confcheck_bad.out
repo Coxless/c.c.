@@ -1,0 +1,14 @@
+exit: 1
+--- stdout
+--- stderr
+Server の検証に失敗しました（10 件）
+  - name: 1 <= len(self) <= 50 を満たしていません
+  - listen: 範囲内の整数が必要です
+  - workers: 1 <= self <= 256 を満たしていません
+  - log_level: debug, info, warn, error のいずれかが必要です
+  - upstreams[0].port: 1 <= self <= 65535 を満たしていません
+  - upstreams[1].host: 必須フィールドがありません
+  - upstreams[1].port: 整数が必要です
+  - upstreams[1].weight: 1 <= self <= 100 を満たしていません
+  - tls.key: 必須フィールドがありません
+  - wokers: 未知のフィールドです

@@ -152,6 +152,7 @@ pub fn cpp_type(t: &Type) -> String {
         TypeKind::Vec(t) => format!("std::vector<{}>", cpp_type(t)),
         TypeKind::Raw(t) => format!("::cc::Raw<{}>", cpp_type(t)),
         TypeKind::Optional(t) => format!("std::optional<{}>", cpp_type(t)),
+        TypeKind::Result(t, e) => format!("std::expected<{}, ::cc::{}>", cpp_type(t), cpp_type(e)),
     }
 }
 
@@ -234,7 +235,11 @@ impl<'a> Emitter<'a> {
                     self.out += code.trim_end();
                     self.out += "\n";
                 }
-                Item::Fn(_) => {}
+                Item::Enum(d) => {
+                    self.out += "\n";
+                    self.enum_decl(d);
+                }
+                Item::Fn(_) | Item::Test(_) => {}
             }
         }
         let fns: Vec<&FnDecl> = prog
@@ -252,12 +257,81 @@ impl<'a> Emitter<'a> {
                 self.w(&format!("{sig};"));
             }
         }
+        // After the prototypes, so an invariant can call a function of this file.
+        for item in &prog.items {
+            if let Item::Schema(d) = item {
+                self.invariant_bodies(d);
+            }
+        }
         for d in &fns {
             self.out += "\n";
             self.function(d);
         }
-        if fns.iter().any(|d| d.name.text == "main") {
-            self.out += "\nint main() { return ::cc::run_main(cc_main); }\n";
+        let main = fns.iter().find(|d| Self::is_main(d)).map(|d| {
+            if d.params.is_empty() {
+                "int main() { return ::cc::run_main(cc_main); }\n"
+            } else {
+                "int main(int argc, char** argv) {\n  return ::cc::run_main([&] { return cc_main(::cc::command_args(argc, argv)); });\n}\n"
+            }
+        });
+        let tests: Vec<&TestDecl> = prog
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Test(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        if tests.is_empty() {
+            if let Some(main) = main {
+                self.out += "\n";
+                self.out += main;
+            }
+            return;
+        }
+        self.out += "\n#ifdef CC_TEST\n";
+        for (i, t) in tests.iter().enumerate() {
+            self.test(i, t);
+            self.out += "\n";
+        }
+        let cases: Vec<String> =
+            tests.iter().enumerate().map(|(i, t)| format!("{{{}, cc_test_{i}}}", cpp_str(&t.label))).collect();
+        self.out += &format!("int main() {{ return ::cc::run_tests({{{}}}); }}\n", cases.join(", "));
+        if let Some(main) = main {
+            self.out += "#else\n";
+            self.out += main;
+        }
+        self.out += "#endif\n";
+    }
+
+    fn test(&mut self, i: usize, t: &TestDecl) {
+        self.olds.clear();
+        self.tmp = 0;
+        self.line(t.func.span);
+        self.w(&format!("static void cc_test_{i}() {{"));
+        self.block(t.func.body.as_ref().unwrap(), &t.func);
+        self.w("}");
+    }
+
+    fn enum_decl(&mut self, d: &EnumDecl) {
+        let name = mangle(&d.name.text);
+        let variants: Vec<String> = d.variants.iter().map(|v| mangle(&v.text)).collect();
+        let names: Vec<String> = d.variants.iter().map(|v| cpp_str(&v.text)).collect();
+        self.line(d.span);
+        self.w(&format!("enum class {name} {{ {} }};", variants.join(", ")));
+        self.w(&format!(
+            "inline std::vector<std::string_view> cc_enum_names({name}) {{ return {{{}}}; }}",
+            names.join(", ")
+        ));
+    }
+
+    fn invariant_bodies(&mut self, d: &SchemaDecl) {
+        let name = mangle(&d.name.text);
+        for (i, inv) in d.invariants.iter().enumerate() {
+            let cond = self.expr(&inv.cond);
+            self.out += "\n";
+            self.line(inv.span);
+            self.w(&format!("inline bool {name}::cc_invariant_{i}() const {{ return {cond}; }}"));
         }
     }
 
@@ -309,6 +383,15 @@ impl<'a> Emitter<'a> {
         self.w(&format!("{cx}const {b}& get() const {{ return v_; }}"));
         self.w(&format!("{cx}operator const {b}&() const {{ return v_; }}"));
         self.w(&format!("friend {cx}bool operator==(const {cls}&, const {cls}&) = default;"));
+        if matches!(base.kind, TypeKind::Prim(Prim::String)) {
+            // std::string's operator== is a template, so the conversion above does not reach it.
+            self.w(&format!("friend bool operator==(const {cls}& a, const {b}& b) {{ return a.v_ == b; }}"));
+        }
+        if matches!(base.kind, TypeKind::Vec(_)) {
+            self.w("auto begin() const { return v_.begin(); }");
+            self.w("auto end() const { return v_.end(); }");
+            self.w("const auto& operator[](std::int64_t i) const { return v_[i]; }");
+        }
         self.indent -= 1;
         self.w(" private:");
         self.indent += 1;
@@ -359,11 +442,11 @@ impl<'a> Emitter<'a> {
             let ty = if is_optional(&f.ty) { format!("std::optional<{}>", p.storage) } else { p.storage.clone() };
             self.w(&format!("{ty} {};", mangle(&f.name.text)));
         }
-        for (i, inv) in d.invariants.iter().enumerate() {
-            let cond = self.expr(&inv.cond);
+        if !d.invariants.is_empty() {
             self.out += "\n";
-            self.line(inv.span);
-            self.w(&format!("bool cc_invariant_{i}() const {{ return {cond}; }}"));
+        }
+        for i in 0..d.invariants.len() {
+            self.w(&format!("bool cc_invariant_{i}() const;"));
         }
 
         self.out += "\n";
@@ -375,6 +458,10 @@ impl<'a> Emitter<'a> {
         self.w("const auto cc_n = errs.size();");
         for (f, p) in d.fields.iter().zip(&plans) {
             self.parse_field(f, p);
+        }
+        if !d.open {
+            let known: Vec<String> = d.fields.iter().map(|f| cpp_str(&f.name.text)).collect();
+            self.w(&format!("::cc::reject_unknown(j, path, {{{}}}, errs);", known.join(", ")));
         }
         self.w("if (errs.size() != cc_n) return std::nullopt;");
         let members: Vec<String> = d
@@ -459,7 +546,7 @@ impl<'a> Emitter<'a> {
                         let items: Vec<String> = items.iter().map(|i| self.expr(i)).collect();
                         format!("{}{{{}}}", self.field_value_type(f), items.join(", "))
                     }
-                    _ => self.expr(def),
+                    _ => self.coerce(def, inner_type(&f.ty)),
                 };
                 self.w("} else {");
                 self.w(&format!("  {var} = ::cc::refine_into<{}>({value}, {path}, errs);", p.storage));
@@ -731,7 +818,58 @@ impl<'a> Emitter<'a> {
                 self.out += code.trim_end();
                 self.out += "\n";
             }
+            StmtKind::Match { subject, arms } => {
+                let m = format!("cc_m{}", self.tmp);
+                self.tmp += 1;
+                let v = self.expr(subject);
+                self.w(&format!("auto {m} = {v};"));
+                let arm = |kinds: [ArmKind; 2]| arms.iter().find(|a| kinds.contains(&a.kind));
+                self.w(&format!("if ({m}) {{"));
+                if let Some(a) = arm([ArmKind::Ok, ArmKind::Some]) {
+                    self.arm(a, &format!("std::move(*{m})"), d);
+                }
+                self.w("} else {");
+                if let Some(a) = arm([ArmKind::Err, ArmKind::None]) {
+                    self.arm(a, &format!("std::move({m}.error())"), d);
+                }
+                self.w("}");
+            }
+            StmtKind::Try { body, var, handler } => {
+                self.w("try {");
+                self.block(body, d);
+                self.w("} catch (const std::exception& cc_e) {");
+                self.w(&format!("  [[maybe_unused]] std::string {} = cc_e.what();", mangle(&var.text)));
+                self.block(handler, d);
+                self.w("}");
+            }
+            StmtKind::With { entries, body, .. } => {
+                let n = self.tmp;
+                self.tmp += 1;
+                let files: Vec<String> =
+                    entries.iter().map(|(k, v)| format!("{{{}, {}}}", self.expr(k), self.expr(v))).collect();
+                self.w("{");
+                self.w(&format!("  ::cc::MemoryFs cc_h{n}{{{}}};", files.join(", ")));
+                self.w(&format!("  ::cc::WithIo cc_w{n}{{cc_h{n}}};"));
+                self.block(body, d);
+                self.w("}");
+            }
+            StmtKind::Expect(cond) => {
+                let src = self.text(cond.span);
+                let c = self.expr(cond);
+                let values = self.values(cond);
+                self.w(&format!(
+                    "if (!({c})) ::cc::expect_failed({}, std::source_location::current(), {values});",
+                    cpp_str(src)
+                ));
+            }
         }
+    }
+
+    fn arm(&mut self, a: &MatchArm, value: &str, d: &FnDecl) {
+        if let Some(b) = &a.binder {
+            self.w(&format!("  [[maybe_unused]] auto {} = {value};", mangle(&b.text)));
+        }
+        self.block(&a.body, d);
     }
 
     // ---------------------------------------------------------- expressions
@@ -774,7 +912,10 @@ impl<'a> Emitter<'a> {
                 let items: Vec<String> = items.iter().map(|i| self.expr(i)).collect();
                 (format!("std::vector{{{}}}", items.join(", ")), PREC_ATOM)
             }
-            ExprKind::Ident(n) => (mangle(n), PREC_ATOM),
+            ExprKind::Ident(n) => match self.ctx.variants.get(&e.span.lo) {
+                Some(cpp) => (cpp.clone(), PREC_ATOM),
+                None => (mangle(n), PREC_ATOM),
+            },
             ExprKind::SelfValue => ("self".into(), PREC_ATOM),
             ExprKind::Path(t, m) => (format!("{}::{}", mangle(t), mangle(m)), PREC_ATOM),
             ExprKind::Field(obj, f) => (format!("{}.{}", self.expr_prec(obj, PREC_POSTFIX), mangle(f)), PREC_POSTFIX),

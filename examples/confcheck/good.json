@@ -1,0 +1,10 @@
+{
+  "name": "  edge-1  ",
+  "listen": 443,
+  "log_level": "info",
+  "tls": { "cert": "/etc/edge.crt", "key": "/etc/edge.key" },
+  "upstreams": [
+    { "host": "app-1.internal", "port": 8080, "weight": 3 },
+    { "host": "app-2.internal", "port": 8080 }
+  ]
+}

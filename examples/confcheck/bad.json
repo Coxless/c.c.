@@ -1,0 +1,12 @@
+{
+  "name": "",
+  "listen": 70000,
+  "wokers": 8,
+  "workers": 0,
+  "log_level": "verbose",
+  "tls": { "cert": "/etc/edge.crt" },
+  "upstreams": [
+    { "host": "app-1.internal", "port": 0 },
+    { "port": "8080", "weight": 101 }
+  ]
+}

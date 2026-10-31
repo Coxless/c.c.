@@ -1,0 +1,27 @@
+exit: 1
+--- stdout
+test 通る
+  ok
+test expect が外れても続きを実行する
+  expect 失敗: n == 4  (failing.c.c:21)
+    n = 3
+  expect 失敗: n == 5  (failing.c.c:22)
+    n = 3
+最後まで来た
+  FAILED
+test pre 違反で止まっても次へ進む
+  FAILED（異常終了）
+test 送出された失敗
+  例外: Id の検証に失敗しました（1 件）
+  - id: 必須フィールドがありません
+  FAILED
+test ハンドラはブロックの外に漏れない
+  例外: ファイルを開けません: a
+  FAILED
+5 件中 1 件成功
+--- stderr
+contract violation: pre「偶数」
+  条件: x % 2 == 0
+  責任: 呼び出し側  failing.c.c:27  test() → half()
+  契約: failing.c.c:3
+  値:   x = 3

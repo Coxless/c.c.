@@ -60,7 +60,7 @@ nav.toc ol { margin: 0; padding-left: 1.3em; }
 <body>
 <main>
 <h1>C.C. 実装解説</h1>
-<p class="lead">PLAN.md のステップ0〜4で作ったもの（ヘッダーライブラリ <code>cc.hpp</code> とトランスパイラ <code>ccc</code>）が、何を受け取り、どんな C++ を出し、どこで何を検査するかをまとめます。コード片はすべてリポジトリ内の実際のファイル（examples/・tests/）から抜き出しています。</p>
+<p class="lead">PLAN.md のステップ0〜4と、その後の見直しで作ったもの（ヘッダーライブラリ <code>cc.hpp</code> とトランスパイラ <code>ccc</code>）が、何を受け取り、どんな C++ を出し、どこで何を検査するかをまとめます。コード片はすべてリポジトリ内の実際のファイル（examples/・tests/）から抜き出しています。</p>
 
 <nav class="toc"><ol>
 <li><a href="#overview">全体の流れ</a></li>
@@ -69,6 +69,7 @@ nav.toc ol { margin: 0; padding-left: 1.3em; }
 <li><a href="#contracts">ステップ2：関数の契約と責任</a></li>
 <li><a href="#schema">ステップ3：スキーマ</a></li>
 <li><a href="#effects">ステップ4：効果と静的検査</a></li>
+<li><a href="#failures">失敗の扱い・enum・test</a></li>
 <li><a href="#tests">テスト</a></li>
 <li><a href="#decisions">決めたことと制限</a></li>
 </ol></nav>
@@ -148,7 +149,7 @@ try_from(0): err(Port の条件 1 &lt;= self &lt;= 65535 を満たしていま�
 <h2 id="contracts">4. ステップ2：関数の契約と責任</h2>
 <p><code>contract fn</code> の <code>pre</code> / <code>post</code> は、関数の入口と <code>return</code> の直前で行う実行時チェックになります。</p>
 <div class="pair stack">
-  <div><p class="label">入力 examples/withdraw.c.c</p><pre class="code "><code>contract fn withdraw(Account&amp; a, i64 amt) -&gt; i64
+  <div><p class="label">入力 examples/withdraw.c.c</p><pre class="code "><code>contract fn withdraw(a: Account&amp;, amt: i64) -&gt; i64
   effects(log)
   pre(amt &gt; 0, &quot;金額は正&quot;)
   pre(a.balance &gt;= amt, &quot;残高が足りる&quot;)
@@ -233,7 +234,7 @@ schema User {
   std::optional&lt;Address&gt; address;
 
 #line 18 &quot;user.c.c&quot;
-  bool cc_invariant_0() const { return age == std::nullopt || age &gt;= 13; }</code></pre>
+  bool cc_invariant_0() const;  // 本体は関数の宣言より後に出力する</code></pre>
 <h3>parse：止めずに全部集める</h3>
 <p>各フィールドを「JSON から取り出す → transform → 条件で検査」の順に処理し、失敗しても <code>errs</code> に積んで次のフィールドへ進みます。全フィールドが揃ってから構造体を組み立て、最後に <code>invariant</code> を検査します。</p>
 <div class="pair">
@@ -272,11 +273,11 @@ err(User の検証に失敗しました（1 件）
 <h2 id="effects">6. ステップ4：効果と静的検査</h2>
 <p>関数が呼ぶもの（関数・<code>?</code>・cpp ブロック）が必要とする効果は、その関数が <code>effects(...)</code> で宣言した効果に含まれていなければなりません。検査はトランスパイル時に行い、C++ には <code>noexcept</code> の有無として残るだけです。</p>
 <pre class="code "><code>// Pure apart from throwing: no io here, guaranteed by the signature.
-fn parse_config(string text) -&gt; Config effects(throw) {
+fn parse_config(text: string) -&gt; Config effects(throw) {
   return Config::parse(parse_json(text))?;
 }
 
-fn load_config(string path) -&gt; Config effects(io, throw) {
+fn load_config(path: string) -&gt; Config effects(io, throw) {
   return parse_config(read_file(path));
 }</code></pre>
 <div class="table-wrap"><table>
@@ -285,7 +286,9 @@ fn load_config(string path) -&gt; Config effects(io, throw) {
 <tr><td><code>T::parse</code> / <code>T::try_from</code>（生成されたもの）</td><td>なし（純粋）</td></tr>
 <tr><td><code>?</code></td><td><code>throw</code>（失敗すると <code>cc::Failure</code> を送出する）</td></tr>
 <tr><td>effects を省略した関数、宣言のない C++ 関数、関数内の <code>cpp { }</code></td><td><code>unsafe</code>（中身が分からないため）</td></tr>
-<tr><td>メソッド呼び出し <code>x.f()</code></td><td>試作では追跡しない</td></tr>
+<tr><td>生成された <code>to_json()</code> / <code>get()</code></td><td>なし（純粋）</td></tr>
+<tr><td>それ以外のメソッド呼び出し <code>x.f()</code></td><td><code>unsafe</code>（C++ のメソッドは効果が分からないため）</td></tr>
+<tr><td><code>try</code> の本体の <code>throw</code></td><td>なし（<code>catch</code> で捕まえるので関数の外に出ない）</td></tr>
 </table></div>
 <p><code>where</code> / <code>pre</code> / <code>post</code> / <code>invariant</code> の条件と既定値は、純粋でなければなりません。</p>
 
@@ -306,18 +309,18 @@ fn load_config(string path) -&gt; Config effects(io, throw) {
   |
 5 |   connect(n + 1);
   |           ^^^^^
-  = 補足: 条件は実行時にしか確かめられないため、Port::try_from(...) で明示的に変換してください
+  = 補足: 条件は実行時にしか確かめられないため、Port::try_from(...)? で明示的に変換してください
 
 literal.c.c:6:11: エラー: i64 型の値を Port に暗黙変換できません
   |
 6 |   connect(n);
   |           ^
-  = 補足: 条件は実行時にしか確かめられないため、Port::try_from(...) で明示的に変換してください</code></pre>
+  = 補足: 条件は実行時にしか確かめられないため、Port::try_from(...)? で明示的に変換してください</code></pre>
 <p class="label">そのほかの規則（tests/errors/misc.c.c）</p>
-<pre class="code "><code>misc.c.c:2:38: エラー: pre / post は contract fn にだけ書けます
+<pre class="code "><code>misc.c.c:2:39: エラー: pre / post は contract fn にだけ書けます
   |
-2 | fn pure_fn(i64 x) -&gt; i64 effects(io) pre(x &gt; 0) {
-  |                                      ^^^^^^^^^^
+2 | fn pure_fn(x: i64) -&gt; i64 effects(io) pre(x &gt; 0) {
+  |                                       ^^^^^^^^^^
   = 補足: `contract fn pure_fn` と宣言してください
 
 misc.c.c:3:3: エラー: `helper` の呼び出しには効果 unsafe が必要ですが、`pure_fn` は effects(io) しか宣言していません
@@ -348,32 +351,50 @@ misc.c.c:7:14: エラー: old() は post 条件の中でだけ使えます
 7 |   return x + old(x);
   |              ^^^^^^</code></pre>
 
-<h2 id="tests">7. テスト</h2>
-<p><code>cd compiler &amp;&amp; cargo test</code> で、次の5種類をまとめて実行します。期待値は <code>UPDATE=1 cargo test</code> で更新し、差分をレビューします。</p>
+<h2 id="failures">7. 失敗の扱い・enum・test</h2>
+<p>設定ファイルを検証する CLI（examples/confcheck.c.c）を書いて見つかった不足を埋めるために追加しました。生成先は次のとおりです。</p>
+<div class="table-wrap"><table>
+<tr><th>C.C.</th><th>生成される C++</th></tr>
+<tr><td><code>match</code> の <code>ok</code> / <code>err</code>、<code>some</code> / <code>none</code></td><td>結果を一時変数に受け、<code>if</code> / <code>else</code> で取り出す</td></tr>
+<tr><td><code>try { } catch e { }</code></td><td><code>try</code> と <code>catch (const std::exception&amp;)</code>。<code>e</code> はメッセージの文字列</td></tr>
+<tr><td><code>enum Role { a, b }</code></td><td><code>enum class</code> と <code>cc_enum_names</code>。フィールドに直接書いた <code>enum { }</code> は <code>User_role</code> という名前の enum になる</td></tr>
+<tr><td><code>fn main(args: vec&lt;string&gt;)</code></td><td><code>cc_main</code> に <code>argv</code> からプログラム名を除いたものを渡す</td></tr>
+<tr><td><code>open schema</code> 以外の <code>schema</code></td><td><code>parse_at</code> の中で <code>cc::reject_unknown</code> を呼ぶ</td></tr>
+<tr><td><code>invariant</code></td><td>本体を関数の宣言より後に出力するので、純粋な C.C. の関数を呼べる</td></tr>
+<tr><td><code>test "名前" { }</code></td><td><code>#ifdef CC_TEST</code> の中の関数と、<code>cc::run_tests</code> を呼ぶ <code>main</code>。テストごとに <code>fork</code> する</td></tr>
+<tr><td><code>with io = MemoryFs{ {k, v} } { }</code></td><td><code>cc::WithIo</code> がスコープの間だけ <code>cc::io_handler</code> を差し替える。<code>read_file</code> がこれを見る</td></tr>
+</table></div>
+
+<h2 id="tests">8. テスト</h2>
+<p><code>cd compiler &amp;&amp; cargo test</code> で、次の7種類をまとめて実行します。期待値は <code>UPDATE=1 cargo test</code> で更新し、差分をレビューします。</p>
 <div class="table-wrap"><table>
 <tr><th>テスト</th><th>対象</th><th>確認すること</th></tr>
 <tr><td><code>snapshot</code></td><td>examples/*.c.c</td><td>生成した C++ が <code>tests/snapshot/*.cpp</code> と一致する</td></tr>
 <tr><td><code>run</code></td><td>examples/*.c.c、tests/run/*.c.c</td><td>g++ でビルド・実行し、終了コード・標準出力・標準エラーが <code>tests/run/expected/*.out</code> と一致する</td></tr>
 <tr><td><code>errors</code></td><td>tests/errors/*.c.c</td><td>トランスパイルが失敗し、エラーメッセージが <code>*.err</code> と一致する</td></tr>
 <tr><td><code>hand</code></td><td>examples/hand/*.cpp</td><td>手書き版（ステップ0）の実行結果</td></tr>
+<tr><td><code>confcheck_cli</code></td><td>examples/confcheck.c.c</td><td>引数に設定ファイルを渡して実行した結果が <code>tests/run/expected/confcheck_*.out</code> と一致する</td></tr>
+<tr><td><code>test_blocks</code></td><td>examples/confcheck.c.c、tests/test/*.c.c</td><td><code>CC_TEST</code> 付きでビルドして実行した結果が <code>tests/test/expected/*.out</code> と一致する</td></tr>
 <tr><td><code>hand_literal_is_checked_at_compile_time</code></td><td>examples/hand/port.cpp</td><td><code>Port::of&lt;0&gt;()</code> がコンパイルエラーになる</td></tr>
 </table></div>
 
-<h2 id="decisions">8. 決めたことと制限</h2>
+<h2 id="decisions">9. 決めたことと制限</h2>
 <div class="note">
 <p><strong>effects を省略した関数</strong>（CONCEPT.md 未決事項1）：検査せず「何でも可」としました。ただし、効果を宣言した関数から呼ぶには <code>unsafe</code> が必要です。既存コードに少しずつ注釈を足していけます。</p>
 <p><strong>既存 C++ の効果</strong>（未決事項2）：宣言のない C++ 関数は <code>unsafe</code> 扱いです。<code>extern fn f(...) effects(...);</code> で効果を絞れます。</p>
 <p><strong>契約の実行時チェック</strong>（未決事項6）：g++ 13 / clang 18 が C++26 Contracts に未対応なので、自前の <code>cc::violation</code> を使っています。</p>
 <p><strong>スキーマのエラー</strong>（未決事項3）：最初からフィールドのパス付きの構造化データにしました。</p>
+<p><strong>where に書ける式</strong>（未決事項4）：リテラル・<code>self</code>・<code>len()</code>・算術・比較・論理に限ります。それ以外は <code>matches</code> か <code>invariant</code> に書きます。</p>
+<p><strong>構文</strong>（未決事項5）：引数も <code>名前: 型</code> の順に揃えました。</p>
 </div>
 <h3>既知の制限</h3>
 <ul>
 <li>対応コンパイラは g++ 13 以降です。clang 18 は libstdc++ 13 の <code>std::expected</code> を使えません。</li>
-<li>スキーマに <code>enum</code> はありません。スキーマ型の値を作る手段は <code>parse</code> か、<code>cpp</code> / <code>extern fn</code> だけです。</li>
-<li>メソッド呼び出しの効果は追跡していません。</li>
+<li>スキーマ型の値を作る手段は <code>parse</code> か、<code>cpp</code> / <code>extern fn</code> だけです。</li>
 <li><code>matches</code> / <code>transform</code> に使えるのは、組み込み関数か <code>extern fn</code> だけです。</li>
 <li>型推論は最小限です。型が分からない式の誤りは、C++ コンパイラのエラーとして出ます（<code>#line</code> により .c.c の行を指します）。</li>
-<li>未着手：<code>with</code> によるハンドラ差し替え、<code>test</code> ブロック、JSON Schema 出力、Z3 による静的証明、所有と手順（<code>once</code> / <code>fixed</code> / <code>protocol</code>）。</li>
+<li><code>with</code> は <code>test</code> の中でだけ使え、差し替えられるのは <code>io</code> の <code>read_file</code> だけです。<code>v[i]</code> の範囲外アクセスは効果として追跡しません。ほかの制限は PLAN.md の6章にあります。</li>
+<li>未着手：JSON Schema 出力、Z3 による静的証明、所有と手順（<code>once</code> / <code>fixed</code> / <code>protocol</code>）。</li>
 </ul>
 </main>
 </body>

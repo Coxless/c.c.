@@ -1,0 +1,4 @@
+exit: 2
+--- stdout
+--- stderr
+使い方: confcheck <config.json>

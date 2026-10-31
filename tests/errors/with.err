@@ -1,0 +1,9 @@
+with.c.c:2:8: エラー: 効果 `log` は差し替えられません（今は io だけです）
+  |
+2 |   with log = MemoryFs{} {
+  |        ^^^
+
+with.c.c:4:13: エラー: ハンドラ `RealFs` はありません（今は MemoryFs だけです）
+  |
+4 |   with io = RealFs{} {
+  |             ^^^^^^

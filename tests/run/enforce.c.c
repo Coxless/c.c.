@@ -1,5 +1,5 @@
 // Default mode is enforce: the first violation aborts the program.
-contract fn half(i64 x) -> i64 effects()
+contract fn half(x: i64) -> i64 effects()
   pre(x % 2 == 0, "偶数")
 {
   return x / 2;

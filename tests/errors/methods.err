@@ -1,0 +1,11 @@
+methods.c.c:4:10: エラー: メソッド `at` の呼び出しには効果 unsafe が必要ですが、`pure_at` は effects() しか宣言していません
+  |
+4 |   return v.at(3);
+  |          ^^^^^^^
+  = 補足: C++ のメソッドは効果が分からないため unsafe 扱いです。結果の取り出しには match を使うか、extern fn で包んでください
+
+methods.c.c:8:10: エラー: メソッド `value` の呼び出しには効果 unsafe が必要ですが、`unwraps` は effects(io) しか宣言していません
+  |
+8 |   return r.value().port;
+  |          ^^^^^^^^^
+  = 補足: C++ のメソッドは効果が分からないため unsafe 扱いです。結果の取り出しには match を使うか、extern fn で包んでください

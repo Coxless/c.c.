@@ -5,6 +5,7 @@ const USAGE: &str = "使い方:
   ccc build <file.c.c> [-o <out.cpp>]   C++ に変換する
   ccc check <file.c.c>                  検査だけ行う
   ccc run   <file.c.c> [-- <args>...]   変換・ビルドして実行する
+  ccc test  <file.c.c>                  変換・ビルドして test ブロックを実行する
 
 環境変数:
   CXX       C++ コンパイラ（既定: g++）
@@ -42,7 +43,11 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             std::fs::write(&out, cpp).map_err(|e| format!("{}: 書き込めません: {e}", out.display()))?;
             Ok(ExitCode::SUCCESS)
         }
-        "run" => {
+        "run" | "test" => {
+            let testing = cmd == "test";
+            if testing && !cpp.contains("#ifdef CC_TEST") {
+                return Err(format!("{}: test ブロックがありません", input.display()));
+            }
             let dir = std::env::temp_dir().join(format!("ccc-run-{}", std::process::id()));
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let stem = input.file_name().unwrap().to_string_lossy().trim_end_matches(".c.c").to_string();
@@ -51,6 +56,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             std::fs::write(&cpp_path, cpp).map_err(|e| e.to_string())?;
             let status = Command::new(cxx())
                 .args(cxx_flags())
+                .args(testing.then_some("-DCC_TEST"))
                 .arg(&cpp_path)
                 .arg("-o")
                 .arg(&exe)

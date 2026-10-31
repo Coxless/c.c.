@@ -5,7 +5,7 @@ struct Account {
 };
 }
 
-contract fn withdraw(Account& a, i64 amt) -> i64
+contract fn withdraw(a: Account&, amt: i64) -> i64
   effects(log)
   pre(amt > 0, "金額は正")
   pre(a.balance >= amt, "残高が足りる")
@@ -18,7 +18,7 @@ contract fn withdraw(Account& a, i64 amt) -> i64
 }
 
 // Breaks its own post condition: the report blames the implementation.
-contract fn withdraw_buggy(Account& a, i64 amt) -> i64
+contract fn withdraw_buggy(a: Account&, amt: i64) -> i64
   pre(amt > 0, "金額は正")
   post(a.balance == old(a.balance) - amt, "残高が amt だけ減る")
 {
@@ -26,12 +26,12 @@ contract fn withdraw_buggy(Account& a, i64 amt) -> i64
   return amt;
 }
 
-extern fn open_account(i64 balance) -> Account effects();
+extern fn open_account(balance: i64) -> Account effects();
 cpp {
 inline Account open_account(std::int64_t balance) { return Account{balance}; }
 }
 
-fn pay(Account& a, i64 price) effects(io, log) {
+fn pay(a: Account&, price: i64) effects(io, log) {
   let paid = withdraw(a, price);
   print("paid", paid, "balance", a.balance);
 }
