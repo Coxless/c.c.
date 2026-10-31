@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # g++ 13 is the oldest supported compiler and the default on this image.
+    # The expected files in tests/ contain its diagnostics.
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: compiler
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show tool versions
+        run: |
+          g++ --version
+          cargo --version
+      - name: Add rustfmt and clippy
+        run: rustup component add rustfmt clippy
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --locked

@@ -1,178 +1,210 @@
 # C.C.（Contract-Centric C++）
 
-一度書いた契約が、型・検証・テスト・ドキュメントのすべてになる C++ ベースの言語の試作です。
+[![CI](https://github.com/Coxless/c.c./actions/workflows/ci.yml/badge.svg)](https://github.com/Coxless/c.c./actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-- 言語の考え方: [CONCEPT.md](CONCEPT.md)
-- 実装計画と進捗: [PLAN.md](PLAN.md)
+値・関数・効果の「契約」を中心にした、C++ へ変換する言語です。`.c.c` ファイルをトランスパイラ `ccc` で C++23 に変換し、普通の C++ コンパイラでビルドします。
 
-`.c.c` ファイルをトランスパイラ `ccc` で C++23 に変換し、普通の C++ コンパイラでビルドします。
+> [!WARNING]
+> **設計を試すための試作です。** 構文は変わる可能性があり、実用には向きません。動作を確認しているのは Ubuntu 24.04 と g++ 13 だけです。
 
-## 必要なもの
+目標は「一度書いた契約が、型・検証・テスト・ドキュメントのすべてになる」言語です。現時点でできる範囲は[できること／まだできないこと](#できることまだできないこと)にまとめています。
+
+## 例
+
+[examples/tour.c.c](examples/tour.c.c):
+
+```cpp
+type Port = u16 where 1 <= self <= 65535;
+
+schema Server {
+  name:    string where 1 <= len(self) <= 50 transform trim;
+  port:    Port;
+  workers: i64    where 1 <= self <= 256 = 4;
+}
+
+contract fn per_worker(requests: i64, workers: i64) -> i64
+  effects()
+  pre(workers > 0, "ワーカーが1つ以上ある")
+  post(r: r * workers <= requests, "割り当ての合計が総数を超えない")
+{
+  return requests / workers;
+}
+
+fn load(text: string) effects(io) {
+  match Server::parse(parse_json(text)) {
+    ok(s)  { print(s.name, "port", s.port, "workers", s.workers); }
+    err(e) { print(e); }
+  }
+}
+
+fn main() -> i32 effects(io) {
+  load(R"({"name": " edge ", "port": 8080})");
+  load(R"({"name": "", "port": 70000, "workers": 0, "wokers": 8})");
+  print(per_worker(100, 3));
+  print(per_worker(100, 0));
+  return 0;
+}
+```
+
+実行結果:
+
+```
+edge port 8080 workers 4
+Server の検証に失敗しました（4 件）
+  - name: 1 <= len(self) <= 50 を満たしていません
+  - port: 範囲内の整数が必要です
+  - workers: 1 <= self <= 256 を満たしていません
+  - wokers: 未知のフィールドです
+33
+contract violation: pre「ワーカーが1つ以上ある」
+  条件: workers > 0
+  責任: 呼び出し側  tour.c.c:32  main() → per_worker()
+  契約: tour.c.c:15
+  値:   workers = 0
+```
+
+- `schema` 1つから、構造体、検証付きの `parse()`、`to_json()` が生成されます
+- 検証エラーは最初の1件で止まらず、全件報告されます
+- 契約違反は、呼び出し側と実装側のどちらの責任かを `.c.c` の行番号付きで報告します
+
+次の誤りは、実行する前に見つかります。
+
+```
+bad.c.c:2:3: エラー: `print` の呼び出しには効果 io が必要ですが、`add` は effects() しか宣言していません
+  |
+2 |   print("add");
+  |   ^^^^^^^^^^^^
+```
+
+```
+raw.c.c:5:9: エラー: 未検証の Raw<Json> を User として使えません
+  |
+5 |   greet(body);
+  |         ^^^^
+  = 補足: 先に User::parse(...) で検証してください（ここが信頼境界です）
+```
+
+## できること／まだできないこと
+
+| 機能 | 状況 |
+|---|---|
+| 条件付きの型（`where`、`matches`）。リテラルはコンパイル時に検査 | ✅ |
+| `schema` からの構造体・`parse()`・`to_json()` の生成、エラーの全件報告 | ✅ |
+| `pre` / `post` / `old()` と、違反の責任の報告 | ✅ |
+| 効果（`effects(...)`）の検査 | ✅ |
+| `Raw<T>` による未検証データと検証済みデータの区別 | ✅ |
+| `test` ブロックと、`with` によるファイル読み込みの差し替え | ✅ |
+| `v[i]` の範囲検査。値が変わる暗黙の変換の禁止 | ✅ |
+| 整数オーバーフローとゼロ除算の検出 | ⚠️ `ccc run` / `ccc test` のときだけ |
+| 型検査 | ⚠️ 多くを C++ コンパイラに任せているので、エラーの文面は C++ のもの |
+| Z3 による静的証明、実行時チェックの削減 | ❌ 未着手 |
+| スキーマからのテスト自動生成、JSON Schema の出力 | ❌ 未着手 |
+| 所有（`once`、`fixed`）と手順（`protocol`） | ❌ 未着手 |
+
+試作として割り切っている点もあります。
+
+- 構造体の値を書く構文がありません。スキーマ型の値は `parse` で作るか、`cpp { }` か `extern fn` に頼ります
+- `vec` への追加など、C++ のメソッド呼び出しには `unsafe` が必要です
+- 1ファイル単位です。モジュール、ジェネリクス、オーバーロードはありません
+- `extern fn` の効果の宣言は信用するだけで、検証はしません
+
+すべての制限は [PLAN.md の既知の制限](PLAN.md#既知の制限区切りでの見直し候補)にあります。
+
+## 始め方
+
+必要なもの:
 
 - Rust（cargo）
-- g++ 13 以降（`std::expected` を使うため。clang 18 + libstdc++ 13 の組み合わせでは `std::expected` が使えません）
+- g++ 13 以降と libubsan（Ubuntu 24.04 では `g++` と一緒に入ります）
 
-ホストに入れずに、[Ubuntu Workshop](https://ubuntu.com/workshop) のコンテナの中で使うこともできます。定義は `.workshop/dev.yaml` にあり、プロジェクトは `/project` にマウントされます。
+clang 18 と libstdc++ 13 の組み合わせでは、`std::expected` を使えないので動きません。
+
+```sh
+git clone https://github.com/Coxless/c.c..git
+cd c.c.
+cargo build --manifest-path compiler/Cargo.toml
+compiler/target/debug/ccc run examples/tour.c.c
+```
+
+ホストに何も入れたくない場合は、[Ubuntu Workshop](https://ubuntu.com/workshop) のコンテナの中で使えます。定義は `.workshop/dev.yaml` にあり、プロジェクトは `/project` にマウントされます。
 
 ```sh
 workshop launch            # 初回のみ。cargo と g++ を入れる
 workshop run -- test       # cargo test
-workshop shell             # 以下の「使い方」はこの中で実行する（cd /project）
+workshop shell             # 以降のコマンドはこの中で実行する（cd /project）
 ```
 
 ## 使い方
 
 ```sh
-cd compiler
-cargo build
-./target/debug/ccc run   ../examples/user.c.c           # 変換・ビルドして実行
-./target/debug/ccc build ../examples/user.c.c -o user.cpp  # C++ に変換
-./target/debug/ccc check ../examples/user.c.c           # 検査だけ
-./target/debug/ccc test  ../examples/confcheck.c.c      # test ブロックを実行
-./target/debug/ccc run   ../examples/confcheck.c.c -- ../examples/confcheck/good.json  # 引数を渡して実行
+ccc run   file.c.c [-- 引数...]    # 変換・ビルドして実行する
+ccc test  file.c.c                 # test ブロックを実行する
+ccc check file.c.c                 # 検査だけ行う（C++ コンパイラの検査も含む）
+ccc build file.c.c [-o out.cpp]    # C++ に変換する
 ```
 
-生成した C++ を自分でビルドする場合は `runtime/` と `third_party/` をインクルードパスに加えます。
+| 環境変数 | 内容 |
+|---|---|
+| `CXX` | C++ コンパイラ（既定: `g++`） |
+| `CC_HOME` | `runtime/` と `third_party/` のあるディレクトリ（既定: ビルドしたときのリポジトリ） |
+| `CC_VERBOSE` | 設定すると C++ コンパイラの出力を省略せずに表示する |
+
+変換した C++ を自分でビルドするときは、`runtime/` と `third_party/` をインクルードパスに加えます。
 
 ```sh
-g++ -std=c++23 -Iruntime -Ithird_party user.cpp -o user
+g++ -std=c++23 -Iruntime -Ithird_party out.cpp -o out
 ```
 
-## 例
+`ccc run` と `ccc test` は、UBSan を有効にしてビルドします（`-fsanitize=undefined -fno-sanitize-recover=undefined`）。自分でビルドするときも、オーバーフローとゼロ除算を検出したければこのオプションを加えてください。
+
+## サンプル
 
 | ファイル | 内容 |
 |---|---|
-| [examples/port.c.c](examples/port.c.c) | 条件付きの型。リテラルはコンパイル時に検査される |
-| [examples/withdraw.c.c](examples/withdraw.c.c) | `pre` / `post` / `old()` と、違反の責任（呼び出し側／実装側）の報告 |
-| [examples/user.c.c](examples/user.c.c) | `schema` から struct・`parse()`・`to_json()` を生成。エラーは全件報告 |
-| [examples/effects.c.c](examples/effects.c.c) | 効果の宣言と `?` |
+| [examples/tour.c.c](examples/tour.c.c) | 上の例 |
 | [examples/confcheck.c.c](examples/confcheck.c.c) | 設定ファイルを検証する CLI。`enum`、`match`、`try`、`test` を使った実用例 |
-| [examples/hand/](examples/hand/) | トランスパイラなしで手書きした「生成コードの完成形」（ステップ0） |
+| [examples/port.c.c](examples/port.c.c) | 条件付きの型 |
+| [examples/withdraw.c.c](examples/withdraw.c.c) | `pre` / `post` / `old()` と違反の責任の報告 |
+| [examples/user.c.c](examples/user.c.c) | `schema` の生成物とエラーの全件報告 |
+| [examples/effects.c.c](examples/effects.c.c) | 効果の宣言と `?` |
+| [examples/hand/](examples/hand/) | トランスパイラなしで手書きした「生成コードの完成形」 |
 
-違反レポートの例（`examples/withdraw.c.c`）:
+## ドキュメント
 
-```
-contract violation: pre「残高が足りる」
-  条件: a.balance >= amt
-  責任: 呼び出し側  withdraw.c.c:35  pay() → withdraw()
-  契約: withdraw.c.c:11
-  値:   a.balance = 200, amt = 500
-```
+| ファイル | 内容 |
+|---|---|
+| [docs/language.md](docs/language.md) | 言語仕様（今の実装が受け付ける言語の定義と、つまずきやすい点） |
+| [CONCEPT.md](CONCEPT.md) | 言語の考え方と、将来の構想 |
+| [PLAN.md](PLAN.md) | 実装計画、進捗、既知の制限 |
+| [docs/limitations-memo.md](docs/limitations-memo.md) | 制限ごとの改善策 |
+| [docs/implementation.html](docs/implementation.html) | 実装の解説（ダウンロードしてブラウザで開きます） |
 
-## 実装済みの言語機能
-
-### 宣言
-
-```cpp
-type Port  = u16 where 1 <= self <= 65535;     // 条件付きの型（ブランド型）
-type Email = string matches email_format;       // 述語関数による条件
-enum Role { admin, member }                     // 列挙（enum { a, b } はフィールドにも直接書ける）
-
-schema User {
-  id:    u64         where self > 0;
-  name:  string      where 1 <= len(self) <= 50 transform trim;
-  email: Email;
-  age:   int?        where 0 <= self <= 150;    // T? は省略可能
-  tags:  vec<string> where len(self) <= 3 = [];  // 既定値
-  invariant(age == none || age >= 13, "13歳以上");
-}
-open schema Event { id: u64; }                  // 未知のフィールドを許す
-
-contract fn withdraw(a: Account&, amt: i64) -> i64
-  effects(log)
-  pre(amt > 0, "金額は正")
-  post(r: r == amt)
-  post(a.balance == old(a.balance) - amt)
-{ ... }
-
-fn greet(u: User) effects(io) { ... }
-fn main(args: vec<string>) -> i32 effects(io) { ... } // 引数は省略できる。プログラム名は含まない
-extern fn open_account(b: i64) -> Account effects();  // C++ で実装された関数の宣言
-cpp { /* 生の C++（逃げ道） */ }
-test "名前" { expect(1 + 1 == 2); }
-```
-
-- 型: `i32` `i64`（`int`）`u8` `u16` `u32` `u64` `f64` `bool` `string`（`str`）`vec<T>` `T?` `Json` `Raw<T>`
-- 文: `let`（`let x: T = ...` も可）、代入（`=` `+=` など）、`return`、`if` / `else`、`for x in xs`、`for i in a..b`、`while`、`match`、`try` / `catch`、`cpp { ... }`
-- 式: 算術、比較（`1 <= x <= 9` のような連鎖も可）、論理、関数呼び出し、`T::parse` / `T::try_from`、フィールド・添字・メソッド呼び出し、`none`、`[a, b]`、`R"(...)"`
-- 組み込み関数: `len` `trim` `email_format` `parse_json`（純粋）、`print` `eprint`（io）、`log`（log）、`read_file`（io, throw）
-
-### 値の契約
-
-- `Port p = 8080;` に相当する `let p: Port = 8080;` は `Port::of<8080>()` になり、条件はコンパイル時に検査されます
-- 静的に分からない値（`n + 1` など）から暗黙には変換できません。`Port::try_from(...)` を使います
-- 外部入力は `Raw<Json>` で受け取り、`User::parse(...)` を通したものだけが `User` になります。`Raw<Json>` を `User` として渡すとコンパイルエラーです
-- スキーマにない JSON フィールドはエラーです。`open schema` にすると無視します
-- `where` に書けるのはリテラル・`self`・`len()`・算術・比較・論理だけです。それ以外の条件は `matches` か `invariant` に書きます。`invariant` からは純粋な関数を呼べます
-
-### 失敗の扱い
-
-```cpp
-let user = User::parse(body)?;          // 失敗を送出する（throw が必要）
-
-match User::parse(body) {               // ok / err の両方が必要
-  ok(user) { greet(user); }
-  err(e)   { eprint(e); }
-}
-
-match user.age {                        // T? は some / none
-  some(age) { print(age); }
-  none      { print("年齢なし"); }
-}
-
-try {                                   // 送出された失敗を文字列で受け取る。中の throw は外に出ない
-  let text = read_file(path);
-} catch message {
-  eprint(message);
-}
-```
-
-### 関数の契約
-
-- `pre` の違反は呼び出し側、`post` の違反は実装側の責任として、`.c.c` の行番号付きで報告します
-- 既定では違反で停止します。`-DCC_CONTRACTS_OBSERVE`（または `cc::contract_mode = cc::Mode::observe;`）で報告だけして続行します
-
-### 効果
-
-- 関数が呼ぶものの効果は、その関数が `effects(...)` で宣言した効果に含まれていなければなりません
-- `effects(...)` を省略した関数は検査されず、何でもできます（既存コードから段階的に導入するため）
-- 効果が分からないもの（`effects` を省略した関数、`extern fn` で宣言していない C++ 関数、関数内の `cpp { }`、C++ のメソッド）を呼ぶには `unsafe` が必要です。生成された `to_json` と `get` は純粋です
-- `?` は失敗時に例外を送出するので `throw` が必要です。`throw` を宣言していない関数には `noexcept` が付きます
-- `where` / `pre` / `post` / `invariant` の条件と既定値は純粋でなければなりません
-
-### テスト
-
-```cpp
-test "設定を読める" {
-  with io = MemoryFs{ {"a.json", R"({"port": 8080})"} } {   // read_file を差し替える（test の中だけ）
-    let c = load_config("a.json");
-    expect(c.port == 8080);                                  // 外れても続きを実行し、失敗として数える
-  }
-}
-```
-
-`ccc test` で実行します。テストごとに別プロセスで動くので、契約違反で止まっても残りのテストは実行されます。テストが1件でも失敗すると終了コードは 1 です。`ccc run` では `test` は無視されます。
-
-## このリポジトリのテスト
+## 開発
 
 ```sh
 cd compiler
 cargo test            # スナップショット・実行・エラー・手書き版・test ブロックのテスト
 UPDATE=1 cargo test   # 期待値ファイルを更新する
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 ```
+
+CI では、Ubuntu 24.04 の上でこの `cargo fmt`、`cargo clippy`、`cargo test` を実行します。
 
 | ディレクトリ | 内容 |
 |---|---|
+| `compiler/` | Rust 製トランスパイラ `ccc`（lexer → parser → check → emit）。依存クレートなし |
+| `runtime/cc/cc.hpp` | 生成コードが使うヘッダーライブラリ |
+| `third_party/` | nlohmann/json |
 | `tests/snapshot/` | `.c.c` → `.cpp` の出力 |
 | `tests/run/` | 生成 C++ をビルド・実行した結果（`expected/*.out`） |
 | `tests/errors/` | 不正な `.c.c` に対するエラーメッセージ |
 | `tests/hand/` | `examples/hand/` の実行結果 |
 | `tests/test/` | `test` ブロックの実行結果（`expected/*.out`） |
 
-## 構成
+## ライセンス
 
-```
-runtime/cc/cc.hpp   生成コードが使うヘッダーライブラリ
-compiler/           Rust 製トランスパイラ ccc（lexer → parser → check → emit）
-third_party/        nlohmann/json（MIT）
-```
+[MIT](LICENSE)
+
+`third_party/` のコードには、それぞれのライセンスが適用されます。生成したプログラムは nlohmann/json を取り込むので、配布するときは [third_party/README.md](third_party/README.md) のライセンス表示を同梱してください。
