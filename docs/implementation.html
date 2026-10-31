@@ -120,6 +120,15 @@ nav.toc ol { margin: 0; padding-left: 1.3em; }
     if (!check(v)) return std::unexpected(::cc::RefineError{&quot;Port&quot;, &quot;1 &lt;= self &lt;= 65535&quot;});
     return Port(std::move(v));
   }
+  template &lt;::cc::integer_like A&gt;
+    requires(!std::same_as&lt;A, std::uint16_t&gt;)
+  static constexpr std::expected&lt;Port, ::cc::RefineError&gt; try_from(const A&amp; a) {
+    if (!::cc::fits&lt;std::uint16_t&gt;(a)) return std::unexpected(::cc::RefineError{&quot;Port&quot;, &quot;u16 の範囲内&quot;});
+    return try_from(static_cast&lt;std::uint16_t&gt;(::cc::integer_value(a)));
+  }
+  template &lt;class A&gt;
+    requires(!std::same_as&lt;A, std::uint16_t&gt; &amp;&amp; !::cc::integer_like&lt;A&gt;)
+  static void try_from(const A&amp;) = delete;
   // Literals: checked at compile time, no runtime check left.
   template &lt;std::uint16_t V&gt;
     requires(check(V))
@@ -393,7 +402,7 @@ misc.c.c:7:14: エラー: old() は post 条件の中でだけ使えます
 <li>スキーマ型の値を作る手段は <code>parse</code> か、<code>cpp</code> / <code>extern fn</code> だけです。</li>
 <li><code>matches</code> / <code>transform</code> に使えるのは、組み込み関数か <code>extern fn</code> だけです。</li>
 <li>型推論は最小限です。型が分からない式の誤りは、C++ コンパイラのエラーとして出ます（<code>#line</code> により .c.c の行を指します）。</li>
-<li><code>with</code> は <code>test</code> の中でだけ使え、差し替えられるのは <code>io</code> の <code>read_file</code> だけです。<code>v[i]</code> の範囲外アクセスは効果として追跡しません。ほかの制限は PLAN.md の6章にあります。</li>
+<li><code>with</code> は <code>test</code> の中でだけ使え、差し替えられるのは <code>io</code> の <code>read_file</code> だけです。<code>v[i]</code> の範囲外アクセスは常に実行時に検査します。整数オーバーフローとゼロ除算の検出は <code>ccc run</code> / <code>ccc test</code> でだけ有効です。ほかの制限は PLAN.md の6章にあります。</li>
 <li>未着手：JSON Schema 出力、Z3 による静的証明、所有と手順（<code>once</code> / <code>fixed</code> / <code>protocol</code>）。</li>
 </ul>
 </main>

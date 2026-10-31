@@ -297,6 +297,11 @@ public:
     if (!(1 <= v && v <= 65535)) return std::unexpected(RefineError{"Port", "1 <= self <= 65535"});
     return Port{v};
   }
+  template <cc::integer_like A> requires (!std::same_as<A, std::uint16_t>)
+  static constexpr std::expected<Port, RefineError> try_from(const A& a) {   // 他の整数は先に範囲を調べる
+    if (!cc::fits<std::uint16_t>(a)) return std::unexpected(RefineError{"Port", "u16 の範囲内"});
+    return try_from(static_cast<std::uint16_t>(cc::integer_value(a)));
+  }
   template <std::uint16_t V> requires (1 <= V && V <= 65535)
   static consteval Port of() { return Port{V}; }   // リテラル用：チェックはコンパイル時
   constexpr std::uint16_t get() const { return v_; }

@@ -1,0 +1,11 @@
+exit: abort
+--- stdout
+2 2 4
+invariant ok
+42
+--- stderr
+contract violation: pre「0 以外」
+  条件: a != 0
+  責任: 呼び出し側  libc_names.c.c:32  main() → abs()
+  契約: libc_names.c.c:13
+  値:   a = 0

@@ -1,0 +1,18 @@
+exit: 0
+--- stdout
+port 8080 true
+port -1 false
+port 73616 (wraps to 8080) false
+port 65536 (wraps to 0) false
+small 4294967297 (wraps to 1) false
+digit 261 (wraps to 5) false
+digit 5 true
+wide rejected: Port の条件 u16 の範囲内 を満たしていません
+Small の条件 i32 の範囲内 を満たしていません
+digit 7
+u8 65
+Defaults の検証に失敗しました（1 件）
+  - n: u64 の範囲内 を満たしていません
+sum 3000000000
+xs 3000000000
+--- stderr

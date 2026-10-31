@@ -7,6 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <concepts>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -28,6 +29,26 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
+
+// Generated code starts with CC_STRICT: C.C. has no implicit conversions that
+// change a value, and a function cannot end without returning. Being pragmas
+// placed after this header's include, they do not apply to the code in this header.
+#define CC_STRICT                                     \
+  _Pragma("GCC diagnostic error \"-Wconversion\"")      \
+  _Pragma("GCC diagnostic error \"-Wsign-conversion\"") \
+  _Pragma("GCC diagnostic error \"-Wsign-compare\"")    \
+  _Pragma("GCC diagnostic error \"-Woverflow\"")        \
+  _Pragma("GCC diagnostic error \"-Wreturn-type\"")
+
+// Around `cpp { }` blocks, which are the user's own C++.
+#define CC_CPP_BEGIN                                    \
+  _Pragma("GCC diagnostic push")                        \
+  _Pragma("GCC diagnostic ignored \"-Wconversion\"")      \
+  _Pragma("GCC diagnostic ignored \"-Wsign-conversion\"") \
+  _Pragma("GCC diagnostic ignored \"-Wsign-compare\"")    \
+  _Pragma("GCC diagnostic ignored \"-Woverflow\"")        \
+  _Pragma("GCC diagnostic ignored \"-Wreturn-type\"")
+#define CC_CPP_END _Pragma("GCC diagnostic pop")
 
 namespace cc {
 
@@ -95,6 +116,31 @@ concept Refined = requires(const T& t) {
   { t.get() };
 };
 
+// An integer in the arithmetic sense: `bool` and the character types do not count.
+template <class T>
+concept plain_integer = std::integral<T> && !std::same_as<T, bool> && !std::same_as<T, char> &&
+                        !std::same_as<T, wchar_t> && !std::same_as<T, char8_t> && !std::same_as<T, char16_t> &&
+                        !std::same_as<T, char32_t>;
+
+// What `try_from` of an integer-based refined type accepts: an integer, or a refined integer.
+template <class T>
+concept integer_like = plain_integer<T> || requires(const T& t) {
+  requires plain_integer<std::remove_cvref_t<decltype(t.get())>>;
+};
+
+template <integer_like A>
+constexpr auto integer_value(const A& a) {
+  if constexpr (plain_integer<A>) return a;
+  else return a.get();
+}
+
+// Whether the value survives conversion to T. This has to be asked before
+// converting: 73616 becomes 8080 as a u16, which would then pass `1 <= self <= 65535`.
+template <class T, integer_like A>
+constexpr bool fits(const A& a) {
+  return std::in_range<T>(integer_value(a));
+}
+
 template <class T>
 concept Schema = requires(const T& t, const Json& j, const std::string& p, std::vector<FieldError>& e) {
   { T::parse_at(j, p, e) } -> std::same_as<std::optional<T>>;
@@ -120,6 +166,8 @@ std::string repr(const T& v) {
   using U = std::remove_cvref_t<T>;
   if constexpr (std::is_same_v<U, bool>) {
     return v ? "true" : "false";
+  } else if constexpr (std::is_same_v<U, std::uint8_t>) {
+    return std::to_string(v);  // a number, although iostreams treat it as a character
   } else if constexpr (std::is_same_v<U, std::string> || std::is_same_v<U, std::string_view> ||
                        std::is_same_v<U, const char*> || std::is_array_v<U>) {
     return Json(std::string(v)).dump();
@@ -229,6 +277,35 @@ inline void violation(Blame blame, const char* kind, const char* label, const ch
   if (contract_mode == Mode::enforce) std::abort();
 }
 
+// `v[i]` outside the bounds. Always stops, whatever the contract mode: unlike a
+// failed pre/post, there is no defined way to carry on.
+[[noreturn]] inline void index_violation(const std::string& index, std::size_t size,
+                                         const std::source_location& caller) {
+  std::string msg = "contract violation: 添字が範囲外です\n";
+  msg += "  条件: 0 <= 添字 < len\n";
+  msg += "  責任: 呼び出し側  " + where(caller) + "  " + function_name(caller) + "()\n";
+  msg += "  値:   添字 = " + index + ", len = " + std::to_string(size) + "\n";
+  std::fputs(msg.c_str(), stderr);
+  std::fflush(stderr);
+  std::abort();
+}
+
+// `c[i]` from .c.c. Other subscripts, such as a string key of a Json, pass through.
+template <class C, class I>
+decltype(auto) at(C&& c, const I& i, std::source_location caller = std::source_location::current()) {
+  using U = std::remove_cvref_t<C>;
+  if constexpr (Refined<U>) {
+    return at(c.get(), i, caller);
+  } else if constexpr (integer_like<I> && requires { std::size(c); }) {
+    const auto n = integer_value(i);
+    if (!std::in_range<std::size_t>(n) || static_cast<std::size_t>(n) >= std::size(c))
+      index_violation(repr(n), std::size(c), caller);
+    return c[static_cast<std::size_t>(n)];
+  } else {
+    return c[i];
+  }
+}
+
 }  // namespace cc
 
 // Macros for hand-written C++. Generated code calls cc::violation directly so
@@ -269,7 +346,7 @@ inline FieldError refine_failure(const std::string& path, const RefineError& e) 
 template <class S, class U>
 std::optional<S> refine_into(U&& u, const std::string& path, std::vector<FieldError>& errs) {
   if constexpr (Refined<S>) {
-    auto r = S::try_from(typename S::underlying_type(std::forward<U>(u)));
+    auto r = S::try_from(std::forward<U>(u));
     if (!r) {
       errs.push_back(refine_failure(path, r.error()));
       return std::nullopt;

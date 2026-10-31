@@ -52,6 +52,7 @@ fn cxx_build(cpp: &Path, exe: &Path, extra: &[&str]) -> Result<(), String> {
     let r = root();
     let out = Command::new(std::env::var("CXX").unwrap_or("g++".into()))
         .args(["-std=c++23", "-Wall", "-Wno-type-limits"])
+        .args(ccc::cxx::SANITIZE_FLAGS)
         .arg(format!("-I{}", r.join("runtime").display()))
         .arg(format!("-I{}", r.join("third_party").display()))
         .args(extra)
@@ -170,6 +171,82 @@ fn hand() {
         cxx_build(p, &exe, &[])?;
         expect(&root().join("tests/hand").join(format!("{}.out", stem(p))), &run_exe(&exe))
     });
+}
+
+/// Runs the `ccc` binary with `source` in its own directory, which is also its TMPDIR.
+/// Returns the exit code and stderr, after checking that no temporary files stayed behind.
+fn ccc(name: &str, cmd: &str, source: &str) -> (Option<i32>, String) {
+    let dir = tmp_dir(&format!("cli-{name}"));
+    let work = dir.join("tmp");
+    std::fs::create_dir_all(&work).unwrap();
+    let file = dir.join(format!("{name}.c.c"));
+    std::fs::write(&file, source).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ccc")).arg(cmd).arg(&file).env("TMPDIR", &work).output().unwrap();
+    let left: Vec<_> = std::fs::read_dir(&work).unwrap().collect();
+    assert!(left.is_empty(), "{name}: 一時ファイルが残っています: {left:?}");
+    (out.status.code(), String::from_utf8_lossy(&out.stderr).to_string())
+}
+
+/// What `ccc check` finds through the C++ compiler, and how it is shown.
+#[test]
+fn check_reports_cpp_errors_against_the_source() {
+    let main = |body: &str| format!("fn main() -> i32 effects(io) {{ {body} return 0; }}\n");
+    let cases = [
+        ("undefined", main("print(nope);"), "'nope'".to_string()),
+        ("mismatch", main("let x: i64 = \"a\";"), "cannot convert".to_string()),
+        ("narrow_let", main("let n: i64 = 73616; let q: u16 = n;"), "may change value".to_string()),
+        ("narrow_literal", main("let q: u16 = 73616;"), "changes value".to_string()),
+        ("to_unsigned", main("let n: i64 = -1; let q: u64 = n;"), "may change the sign".to_string()),
+        ("sign_compare", main("let a: i64 = -1; let b: u64 = 1; print(a < b);"), "comparison".to_string()),
+        ("float", main("let d: f64 = 1.5; let n: i64 = d;"), "may change value".to_string()),
+        (
+            "no_return",
+            "// 2 行目の関数\nfn f(a: i64) -> i64 effects() {\n  if a > 0 {\n    return 1;\n  }\n}\nfn main() -> i32 { return 0; }\n"
+                .to_string(),
+            "no_return.c.c:2: エラー: control reaches end".to_string(),
+        ),
+        (
+            "literal",
+            format!("type Port = u16 where 1 <= self;\n{}", main("let p: Port = 0;")),
+            "リテラル 0 は Port の条件を満たしていません".to_string(),
+        ),
+        (
+            "float_try_from",
+            format!("type Port = u16 where 1 <= self;\n{}", main("let d: f64 = 8080.5; print(Port::try_from(d));")),
+            "deleted".to_string(),
+        ),
+        (
+            "unknown_type",
+            "fn f(a: Foo) effects() { }\nfn main() -> i32 { return 0; }\n".to_string(),
+            "'Foo'".to_string(),
+        ),
+    ];
+    let errors: Vec<String> = cases
+        .iter()
+        .filter_map(|(name, source, needle)| {
+            let (code, err) = ccc(name, "check", source);
+            let hidden = ["note:", "ccc-run-", "^~"].iter().any(|h| err.contains(h));
+            let located = err.contains(&format!("{name}.c.c:"));
+            (code != Some(1) || !err.contains(needle.as_str()) || hidden || !located)
+                .then(|| format!("{name}: exit {code:?}, `{needle}` を期待\n{err}"))
+        })
+        .collect();
+    assert!(errors.is_empty(), "\n{}", errors.join("\n"));
+}
+
+#[test]
+fn check_accepts_a_valid_program() {
+    let (code, err) = ccc("valid", "check", "fn main() -> i32 effects(io) { print(1); return 0; }\n");
+    assert_eq!(code, Some(0), "{err}");
+}
+
+/// A signal other than the abort of a contract violation must not end the program silently.
+#[test]
+fn run_reports_death_by_signal() {
+    let source = "cpp {\n#include <csignal>\n}\nfn main() -> i32 { cpp { std::raise(SIGSEGV); } return 0; }\n";
+    let (code, err) = ccc("signal", "run", source);
+    assert_eq!(code, Some(139), "{err}");
+    assert!(err.contains("シグナル 11"), "{err}");
 }
 
 /// Step 0 completion criterion: `Port::of<0>()` does not compile.

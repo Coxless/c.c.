@@ -1,0 +1,8 @@
+exit: abort
+--- stdout
+2
+--- stderr
+contract violation: 添字が範囲外です
+  条件: 0 <= 添字 < len
+  責任: 呼び出し側  index_write.c.c:8  main()
+  値:   添字 = -1, len = 1

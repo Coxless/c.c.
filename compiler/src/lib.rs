@@ -2,6 +2,7 @@
 
 pub mod ast;
 pub mod check;
+pub mod cxx;
 pub mod diag;
 pub mod emit;
 pub mod lexer;
