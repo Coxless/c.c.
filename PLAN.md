@@ -227,7 +227,7 @@ contract fn withdraw(a: Account&, amt: i64) -> i64
 
 ### 次に進む候補
 
-コンセプトのフェーズ2までは完了した。残りの候補：
+コンセプトのフェーズ2までは完了した。制限ごとの改善策と順序は [docs/limitations-memo.md](docs/limitations-memo.md) にまとめた。残りの候補：
 
 - 6章の既知の制限のうち、実際に困ったもの（`T::parse` の結果の型を書く、`enum` の `match`、`print` の差し替え）
 - JSON Schema の出力
