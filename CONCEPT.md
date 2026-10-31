@@ -1,16 +1,32 @@
 # C.C. 言語コンセプト（Contract-Centric C++）
 
-- バージョン: ドラフト 0.3（試作用）
+- バージョン: ドラフト 0.4
 - 日付: 2026-10-31
-- 拡張子: `.c.c`
+- 拡張子: `.c.c`（ヘッダーは `.c.h`）
+
+> [!IMPORTANT]
+> この文書は**目指す形**を書いたものです。ドラフト 0.4 で、独自文法の言語から「C++ の上位互換」へ方針を変えました。**今の実装はまだ旧方式**です。今の実装が受け付ける言語は [docs/language.md](docs/language.md)、移行の手順は [PLAN.md](PLAN.md) の1章にあります。
 
 ---
 
 ## 1. 一言でいうと
 
-**一度書いた契約が、型・検証・テスト・ドキュメントのすべてになる C++ ベースの言語。**
+**C++ に対する TypeScript のような言語。普通の C++ に契約を書き足すと、型・検証・テスト・ドキュメントになる。**
 
-値・関数・効果・所有・手順の5つを「契約」として宣言する。コンパイラは証明できる部分を証明し、証明できない部分だけを実行時にチェックする。データの境界では zod のようなスキーマで外部入力を検証し、検証済みの値だけを型として扱う。
+JavaScript がほぼそのまま TypeScript として通るように、C++ のコードはそのまま C.C. として通ります。そこに値・関数・効果の契約を少しずつ足していくと、その部分から検査が効き始めます。
+
+### TypeScript との対応
+
+| TypeScript | C.C. |
+|---|---|
+| JS はほぼそのまま TS として通る | `.cpp` を `.c.c` に改名すれば通る |
+| 型注釈を足すほど検査が効く | `schema`、`pre` / `post`、`effects` を足すほど検査が効く |
+| `any` | 注釈のない関数、`unsafe` |
+| `strict` | 厳格モード（`#pragma cc strict`） |
+| `declare`、`.d.ts` | 既存の関数への効果の宣言 |
+| 健全性より実用性を優先する | 検査できない部分は `unsafe` で明示する |
+
+**TypeScript と違う点:** TypeScript の型は変換すると消えますが、C.C. の拡張は `parse()` や実行時チェックのコードを生成します。「TypeScript と zod を合わせたもの」に近いです。
 
 ### 目指す立ち位置
 
@@ -19,201 +35,277 @@
 | Dafny / F\* | 証明 | 証明できないとビルドが通らない。学習コストが高い |
 | C++26 Contracts | 実行時チェック | 関数の pre/post だけ。スキーマも効果もない |
 | Cpp2 (cppfront) | 構文の整理 | 契約は持つが効果・スキーマはない |
+| Carbon | C++ の後継 | 新しい文法への移行が前提。C.C. は C++ のまま書く |
 | Effect-TS / zod | 実用的な検証 | TypeScript 上のライブラリ |
-| **C.C.** | **実用→証明への段階的移行** | **まず実行時チェックで使え、後から証明を効かせる** |
+| **C.C.** | **C++ への段階的な契約の導入** | **既存の C++ に足していける。証明は後から効かせる** |
 
 ---
 
 ## 2. 設計原則
 
-1. **契約は一箇所に書く**：型、検証コード、テスト、ドキュメントを別々に書かない。契約から生成する
-2. **証明できるものは証明する**：静的に示せる条件はコンパイル時に消し、残りだけを実行時チェックにする
-3. **検証ではなく変換（parse）する**：未検証のデータと検証済みのデータを別の型にする。検証済みの型は二度チェックしない
-4. **違反には責任者がいる**：契約違反のたびに、呼び出し側と実装側のどちらが破ったかを報告する
-5. **出力は普通の C++**：生成コードは読める C++（試作では C++23）。既存のライブラリやツールチェーンをそのまま使える
-6. **契約は人と AI の境界**：人間が契約を書き、実装は誰が書いてもよい。AI が書いたコードも契約で機械的に検収する
-7. **段階的に導入できる**：全部に契約を書かなくてもよい。外部入力の境界と重要なロジックから始められる
+1. **C++ はそのまま通す**：有効な C++ は有効な C.C. である。拡張はファイルの一部にだけ現れる
+2. **C++ の意味を変えない**：拡張の外にある C++ は、C++ のとおりに動く。挙動を厳しくするのは、書き手が厳格モードを選んだときだけ
+3. **足す構文は最小にする**：ライブラリか C++ の機能で書けるものは、構文にしない
+4. **契約は一箇所に書く**：型、検証コード、テスト、ドキュメントを別々に書かない。契約から生成する
+5. **検証ではなく変換（parse）する**：未検証のデータと検証済みのデータを別の型にする。検証済みの型は二度チェックしない
+6. **違反には責任者がいる**：契約違反のたびに、呼び出し側と実装側のどちらが破ったかを報告する
+7. **検査はコンパイラに任せる**：C++ の解析を自作しない。呼び出しの解決などは Clang の結果を使う
+8. **出力は普通の C++**：生成コードは読める C++。既存のライブラリやツールチェーンをそのまま使える
+9. **検査できないものは正直に示す**：完全な保証はあきらめ、信頼している箇所を `unsafe` として見えるようにする
+10. **契約は人と AI の境界**：人間が契約を書き、実装は誰が書いてもよい。AI が書いたコードも契約で機械的に検収する
 
 ---
 
 ## 3. 契約の5層
 
-| 層 | 名前 | 内容 | 参考 |
+| 層 | 名前 | 内容 | 検査するもの |
 |---|---|---|---|
-| 1 | 値 | 型に条件を付ける（Refinement Types）。スキーマもここ | Liquid Haskell, F\*, zod |
-| 2 | 関数 | 事前条件・事後条件・不変条件、`old()` | Eiffel, C++26 Contracts, SPARK |
-| 3 | 効果 | 関数が外の世界に何をしてよいか | Koka, OCaml 5, Unison |
-| 4 | 所有 | 一回限り・共有・不変の区別 | Rust, Pony, Hylo |
-| 5 | 手順 | API を呼べる順序（Typestate） | Typestate, Session Types |
-
-下の層ほど基礎的。試作は層1〜3を対象にする。
+| 1 | 値 | 型に条件を付ける（Refinement Types）。スキーマもここ | C++ の型システム、`ccc` のコード生成 |
+| 2 | 関数 | 事前条件・事後条件、`old()` | `ccc` のコード生成 |
+| 3 | 効果 | 関数が外の世界に何をしてよいか | Clang の解析 |
+| 4 | 所有 | 一回限り・共有・不変の区別 | ムーブ専用型、Clang の解析（方向性のみ） |
+| 5 | 手順 | API を呼べる順序（Typestate） | 状態ごとの型、Clang の解析（方向性のみ） |
 
 ---
 
-## 4. 層1：値の契約とスキーマ
+## 4. 足す構文
 
-### 4.1 構文
+C++ に足すのは次の5つだけです。**それ以外はすべて普通の C++ です。**
+
+| 構文 | 役割 | 検出の方法 |
+|---|---|---|
+| `type T = ... where ...;` | 条件付きの型 | トップレベルの文脈で判定 |
+| `schema T { ... }` | スキーマ | 同上 |
+| `enum T { ... }` のうちスキーマで使うもの | 名前の一覧付きの列挙 | スキーマから参照されたとき |
+| `pre(...)` / `post(...)` | 関数の契約 | 関数の宣言の `)` の直後 |
+| `test "名前" { ... }` | テスト | トップレベルの文脈で判定 |
+
+`[[cc::effects(...)]]` は C++ の属性の構文なので、新しい文法ではありません。
+
+`type` や `schema` は、C++ では変数名や型名にも使えます。文脈で判定しますが、まれに衝突します。そのときは名前を変えてもらうと割り切ります（TypeScript の文脈依存キーワードと同じ考え方です）。
+
+### 旧方式の構文の移り先
+
+| 旧方式（ドラフト 0.3 まで） | ドラフト 0.4 |
+|---|---|
+| `let x = 1;`、`fn f()`、`for i in 0..n` | 普通の C++ |
+| `i64`、`string`、`vec<T>`、`T?` | `<cc/cc.hpp>` の別名か、`std::` の型。スキーマの中では短い名前のまま書ける |
+| `match` | `if (auto r = User::parse(j)) { ... } else { ... }` |
+| `?` | `cc::must(User::parse(j))`（失敗すると例外を送出する関数） |
+| `try` / `catch` | 普通の C++ |
+| `with io = MemoryFs{...} { }` | `cc::MemoryFs fs{...}; cc::WithIo io{fs};` |
+| `expect(c);` | `test` の中で使う `expect(c);`（そのまま） |
+| `cpp { ... }` | 不要。全体が C++ |
+| `extern fn f(...) effects(...);` | 普通の宣言に `[[cc::effects(...)]]` を付ける |
+| `let p: Port = 8080;` | `Port p = 8080;` |
+| `contract fn f()` | `int f() pre(...) post(...)`。`contract` は不要にする |
+
+---
+
+## 5. 層1：値の契約とスキーマ
+
+### 5.1 構文
 
 ```cpp
+type Port  = u16    where 1 <= self <= 65535;
+type Email = string matches email_format;
+
+enum Role { admin, member };
+
 schema User {
   id:    u64                    where self > 0;
   name:  string                 where 1 <= len(self) <= 50
                                 transform trim;
-  email: Email;                 // 別スキーマ・型の再利用
-  age:   int?                   where 0 <= self <= 150;
-  role:  enum { admin, member } = member;      // 既定値
+  email: Email;
+  age:   int32?                 where 0 <= self <= 150;
+  role:  Role = member;
   tags:  vec<string>            where len(self) <= 10 = [];
 
   invariant(role != admin || age >= 18, "管理者は18歳以上");
 }
-
-// 条件付きの型は独立した型（ブランド型）になる
-type Email = string matches email_format;
-type Port  = u16    where 1 <= self <= 65535;
-
-// 名前の付いた enum。関数の引数にも使える
-enum Role { admin, member }
 ```
 
-- `where` に書けるのはリテラル・`self`・`len()`・算術・比較・論理だけ。後で SMT ソルバーに渡せる範囲に絞っている
+- `where` に書けるのはリテラル・`self`・`len()`・算術・比較・論理だけ。後で SMT ソルバーに渡せる範囲に絞っている。**連鎖比較（`1 <= x <= 9`）は `where` と `invariant` の中でだけ使える**
 - それ以外の条件は `matches`（述語関数）か `invariant`（純粋な関数も呼べる。証明の対象外）に書く
 - スキーマにない JSON フィールドはエラーになる。無視したいときは `open schema` と宣言する
-- `enum` の値は、型が分かる場所（比較・既定値・引数）では `admin`、それ以外では `Role::admin` と書く
 
-### 4.2 1つの `schema` から生成されるもの
+### 5.2 1つの `schema` から生成されるもの
 
-| 生成物 | 内容 |
-|---|---|
-| `struct User` | 普通の C++ 構造体。フィールドは条件を満たす型 |
-| `User::parse()` | JSON などから変換。戻り値は `std::expected<User, ParseError>` |
-| `ParseError` | どのフィールドのどの条件が破れたかを**全件**まとめて返す |
-| `to_json()` | 直列化。既定値・transform の逆方向も扱う |
-| JSON Schema | API ドキュメントや他言語クライアントとの共有用 |
-| テスト用生成器 | 条件を満たす値と、わざと破る値を自動生成 |
+| 生成物 | 内容 | 状況 |
+|---|---|---|
+| `struct User` | 普通の C++ 構造体。フィールドは条件を満たす型 | 実装済み（旧方式） |
+| `User::parse()` | JSON から変換。戻り値は `std::expected<User, ParseError>` | 実装済み（旧方式） |
+| `ParseError` | どのフィールドのどの条件が破れたかを**全件**まとめて返す | 実装済み（旧方式） |
+| `to_json()` | 直列化 | 実装済み（旧方式） |
+| JSON Schema | API ドキュメントや他言語クライアントとの共有用 | 未着手 |
+| テスト用生成器 | 条件を満たす値と、わざと破る値を自動生成 | 未着手 |
 
-### 4.3 未検証と検証済みを型で分ける
+### 5.3 未検証と検証済みを型で分ける
 
-外部データは `Raw<T>` で受け取り、`parse` を通したものだけが `T` になる。
+外部データは `cc::Raw<T>` で受け取り、`parse` を通したものだけが `T` になります。C++ の型の検査だけで成り立つので、Clang は要りません。
 
 ```cpp
-fn handle(body: Raw<Json>) -> Response effects(io, throw) {
-  let user = User::parse(body)?;   // ここが信頼境界
-  register(user);                  // 以降は検証済み
+void handle(cc::Raw<cc::Json> body) {
+  User user = cc::must(User::parse(body));   // ここが信頼境界
+  register_user(user);                       // 以降は検証済み
 }
 
-fn register(u: User) effects(io) { ... }
-register(body);  // ✗ Raw<Json> は User ではない
+void register_user(const User& u);
+register_user(body);  // ✗ コンパイルエラー: Raw<Json> は User ではない
 ```
 
-### 4.4 静的に分かる場合は実行時チェックを消す
-
-- `let p: Port = 8080;` → コンパイル時に確定。チェックコードは生成しない
-- `let p: Port = n + 1;` → 静的に分からないのでエラー。`Port::try_from(n + 1)?` を要求する（暗黙の実行時チェックは入れない）
-
-### 4.5 失敗を扱う
-
-`T::parse` と `T::try_from` の結果は、成功と失敗のどちらかである。取り出し方は3つある。
+### 5.4 静的に分かる場合は実行時チェックを消す
 
 ```cpp
-let user = User::parse(body)?;      // 失敗を送出する。throw が必要
+Port a = 8080;                  // コンパイル時に検査。チェックコードは生成しない
+Port b = 0;                     // ✗ コンパイルエラー
+Port c = n + 1;                 // ✗ コンパイルエラー。静的に分からない
+auto d = Port::try_from(n + 1); // 実行時に検査。std::expected を返す
+```
 
-match User::parse(body) {           // その場で分ける。ok / err の両方が必要
-  ok(user) { register(user); }
-  err(e)   { eprint(e); }
-}
+`consteval` の変換コンストラクタで実現します。`try_from` は、受け取った整数が元の型の範囲に収まるかを、変換する前に調べます。
 
-match user.age {                    // T? は some / none で分ける
-  some(age) { print(age); }
-  none      { print("年齢なし"); }
-}
+### 5.5 失敗を扱う
 
-try {                               // 送出された失敗を捕まえる。中の throw は外に出ない
-  let text = read_file(path);
-} catch message {
-  eprint(message);
+新しい構文は足しません。
+
+```cpp
+User user = cc::must(User::parse(body));    // 失敗すると例外を送出する
+
+if (auto r = User::parse(body)) {           // その場で分ける
+  register_user(*r);
+} else {
+  std::cerr << r.error().to_string();
 }
 ```
 
 ---
 
-## 5. 層2：関数の契約と責任の追跡
+## 6. 層2：関数の契約と責任の追跡
 
 ```cpp
-contract fn withdraw(a: Account&, amt: Money) -> Money
-  effects(log)
+std::int64_t withdraw(Account& a, std::int64_t amt)
   pre(amt > 0,          "金額は正")
   pre(a.balance >= amt, "残高が足りる")
   post(r: r == amt)
   post(a.balance == old(a.balance) - amt)
 {
   a.balance -= amt;
-  log("withdraw");
   return amt;
 }
 ```
 
 - `pre` の違反 → **呼び出し側**の責任
 - `post` の違反 → **実装側**の責任
+- `pre` / `post` の位置と `post(r: ...)` の形は、C++26 Contracts に揃える。説明の文字列と `old()` は C.C. の拡張
 
 違反レポートの例:
 
 ```
 contract violation: pre「残高が足りる」
+  条件: a.balance >= amt
   責任: 呼び出し側  checkout.c.c:42  pay() → withdraw()
+  契約: checkout.c.c:11
   値:   a.balance = 300, amt = 500
 ```
 
+本体を解析せずに `post` を検査するため、関数を「元の本体」と「検査して呼び出す外側の関数」に分けて生成します。呼び出し位置は外側の関数の隠し引数で受け取ります。
+
 ---
 
-## 6. 層3：効果の契約
+## 7. 層3：効果の契約
 
-関数が使ってよい効果を宣言する。**呼び出す関数の効果は、呼び出し元が宣言した効果に含まれていなければならない。**
+関数が使ってよい効果を宣言します。**呼び出す関数の効果は、呼び出し元が宣言した効果に含まれていなければなりません。**
+
+```cpp
+[[cc::effects()]]                 // 純粋
+int add(int a, int b) { return a + b; }
+
+[[cc::effects(io, throw)]]
+std::string load(const std::string& path);
+
+[[cc::effects()]]
+int bad() {
+  load("x");                      // ✗ io と throw を宣言していない
+  return 0;
+}
+```
 
 | 効果 | 意味 | 主な用途 |
 |---|---|---|
 | `io` | ファイル、ネットワーク、標準入出力 | パーサが外部通信しない保証 |
-| `alloc` | ヒープ確保 | `!alloc` でリアルタイム処理 |
-| `throw` | 例外の送出 | なければ `noexcept` に変換 |
+| `alloc` | ヒープ確保 | リアルタイム処理 |
+| `throw` | 例外の送出 | 例外が漏れないことの保証 |
 | `async` | コルーチンによる中断 | 同期処理の中での誤用防止 |
-| `unsafe` | 生ポインタ、未定義動作の可能性 | 監査範囲の絞り込み |
+| `unsafe` | 生ポインタ、未定義動作の可能性、呼び先の分からない呼び出し | 監査範囲の絞り込み |
 | `nondet` | 時刻、乱数 | テストの再現性 |
 | `log` | ログ出力 | `io` から分離した軽い効果 |
 
+### 7.1 Clang で検査する理由
+
+C++ では、呼び出しがソースに見えないことがあります。暗黙のコンストラクタ、デストラクタ、演算子、テンプレートの実体、マクロ、引数の型による名前の探索（ADL）です。正しく判定するにはコンパイラ並みの解析が要るので、自作せず Clang の AST を読みます。
+
+| 機能 | Clang |
+|---|---|
+| `type`、`schema`、`Raw<T>`、`pre` / `post`、厳格モード、ビルド | 不要（g++ で可） |
+| **`effects` の検査** | **必要** |
+
+位置づけは ESLint に近いものです。`ccc check` のときだけ Clang で効果を検査します。Clang がない環境では、効果の検査を飛ばして警告を出します。
+
+### 7.2 検査の規則
+
+- `[[cc::effects(...)]]` を付けた関数の本体だけを検査する。**注釈のない関数は普通の C++ のままで、何でもできる**
+- 呼び先は暗黙の呼び出しも含めて、Clang が解決した結果で判定する。テンプレートは実体ごとに判定する
+- ラムダの本体は、それを書いた関数の一部として検査する
+
+| 呼び先 | 効果 |
+|---|---|
+| `[[cc::effects(...)]]` のある関数 | 宣言されたもの |
+| 効果の一覧（標準ライブラリなど）にある関数 | 一覧のもの |
+| 注釈のない関数、一覧にない関数 | `unsafe` |
+| 仮想関数、関数ポインタ、`std::function` | `unsafe` |
+| `throw` 式 | `throw` |
+| `new` | `alloc` |
+| `reinterpret_cast`、インラインアセンブリ | `unsafe` |
+
+効果の推論はしません。シグネチャを読めば効果が分かることに価値があるからです。
+
+### 7.3 エフェクトハンドラ（効果の差し替え）
+
 ```cpp
-fn parse(s: str) -> Json effects()          // 純粋
-fn load(p: Path) -> str  effects(io, throw)
-
-fn config() -> Json effects(io, throw) {
-  return parse(load("a.json"));  // OK
-}
-fn bad(s: str) -> Json effects() {
-  load("x");  // ✗ io も throw も宣言していない
-}
-```
-
-効果を省略した関数は検査されず、何でもできる（既存コードから段階的に導入するため）。効果が分からないもの、つまり効果を省略した関数、宣言のない C++ 関数、関数内の `cpp { }`、C++ のメソッド呼び出しを呼ぶには `unsafe` が必要になる。既存の C++ 関数は `extern fn f(...) effects(...);` で効果を宣言して使う。
-
-### 6.1 エフェクトハンドラ（効果の差し替え）
-
-```cpp
-fn load_config() -> Config effects(io, throw) {
-  return Config::parse(parse_json(read_file("app.json")))?;
+[[cc::effects(io, throw)]]
+Config load_config() {
+  return cc::must(Config::parse(cc::parse_json(cc::read_file("app.json"))));
 }
 
 test "設定を読める" {
-  with io = MemoryFs{ {"app.json", R"({"port": 8080})"} } {
-    expect(load_config().port == 8080);
-  }
+  cc::MemoryFs fs{ {"app.json", R"({"port": 8080})"} };
+  cc::WithIo io{fs};
+  expect(load_config().port == 8080);
 }
 ```
 
-モックライブラリなしで、同じコードを本番とテストで動かせる。`with` は `test` の中でだけ使える。試作で差し替えられるのは `io` の `read_file` だけ。
+モックライブラリなしで、同じコードを本番とテストで動かせます。差し替えられるのは `cc::read_file` のような C.C. のライブラリ経由の呼び出しだけで、`fopen` の直接呼び出しは差し替わりません（効果の検査では `unsafe` として見つかります）。
 
-テストは `ccc test` で実行する。テストごとに別プロセスで動くので、契約違反で止まっても残りのテストは実行される。
+テストは `ccc test` で実行します。テストごとに別プロセスで動くので、契約違反で止まっても残りのテストは実行されます。
 
 ---
 
-## 7. 層4・5：所有と手順（試作の対象外。方向性のみ）
+## 8. 厳格モード
+
+原則2のとおり、既定では C++ の挙動を変えません。ファイルの先頭に `#pragma cc strict` と書くと、そのファイルで次が有効になります。
+
+| 検査 | 実現方法 |
+|---|---|
+| 値が変わる暗黙の変換、符号付きと符号なしの比較 | g++ の警告をエラーにする |
+| `return` のない経路 | 同上 |
+| `v[i]` の範囲外 | libstdc++ の検査を有効にする |
+
+`ccc run` と `ccc test` は厳格モードに関係なく UBSan を有効にしてビルドし、オーバーフローやゼロ除算を実行時に検出します。
+
+---
+
+## 9. 層4・5：所有と手順（方向性のみ）
 
 ```cpp
 once Token t = issue();     // 一回限り。使うと消える
@@ -227,60 +319,28 @@ protocol File {
   Opened -> read()  -> Opened;
   Opened -> close() -> Closed;
 }
-File f;  f.read();          // ✗ Closed 状態では read() を呼べない
 ```
+
+ムーブ専用型と状態ごとの型に変換し、検出には Clang の解析を使う想定です。具体的な設計は未定です。
 
 ---
 
-## 8. 処理パイプライン
+## 10. 処理パイプライン
 
-前の段階で片付いた契約は、後の段階に残らない。
+```
+.c.c ─▶ ccc（拡張だけ変換）─▶ .cpp ─┬▶ Clang の AST ─▶ 効果の検査（ccc check）
+                                    └▶ g++ または clang++ ─▶ 実行ファイル
+```
 
-1. **型検査**：効果・所有・手順・スキーマの構造をチェック
-2. **静的証明**：条件式を SMT ソルバー（Z3）に渡し、証明できたものを消す
-3. **実行時チェックの挿入**：残った条件を自前の実行時チェックとして出力。既定は enforce で、observe に切り替えられる
-4. **テスト生成**：スキーマと pre からプロパティベーステストを作り、post を検査
-5. **ドキュメント生成**：API リファレンスと JSON Schema を出力
+1. **変換**：`ccc` が字句を読み、拡張だけを C++ に置き換える。**それ以外は1文字も変えない**。`#line` で `.c.c` の行を保つ
+2. **ビルド**：普通の C++ コンパイラでビルドする。値の契約の多くはここで検査される
+3. **効果の検査**：Clang の AST を読む
+4. **静的証明（将来）**：`where` と `pre` を SMT ソルバー（Z3）に渡し、証明できたものの実行時チェックを消す
+5. **生成（将来）**：プロパティベーステスト、JSON Schema、API リファレンス
 
 ---
 
-## 9. 実装方式：トランスパイラ（将来はコンパイラにも）
-
-### 9.1 構成
-
-```
-.c.c ─▶ 字句解析 ─▶ 構文解析 ─▶ AST ─▶ 意味解析 ─▶ C.C. IR ─┬▶ C++ 出力（最初）
-                                         (型・効果・契約)        └▶ LLVM IR 出力（将来）
-```
-
-### 9.2 C++ を出力する理由
-
-- STL や既存ライブラリとの相互運用がほぼタダで手に入る（テンプレート展開・オーバーロード解決を自作しなくてよい）
-- 最適化、各 CPU 向けのコード生成、デバッガ、sanitizer をそのまま使える
-- 生成物が読めるので、言語が廃れても成果物が残る
-- 前例：Cfront（C++ 自身）、cppfront、TypeScript、Nim
-
-C.C. の価値（スキーマ・効果・証明・責任追跡）はすべて**フロントエンド側**にあるので、どちらの方式でも作業量の中心は同じ。**IR をきちんと分離しておけば、後から LLVM バックエンドを追加できる。**
-
-### 9.3 C++ への変換表
-
-| C.C. | 生成される C++ |
-|---|---|
-| `schema User {...}` | struct、parse 関数、`std::expected`、シリアライザ |
-| `type Port = u16 where ...` | 検査付きコンストラクタを持つ薄いラッパークラス |
-| `enum Role {...}` | `enum class` と、値の名前の一覧 |
-| `pre` / `post` | 自前の実行時チェック（`cc::violation`）。責任の報告に呼び出し位置と `.c.c` の条件文が要るため |
-| `match` / `try` | `std::expected` の分岐 / `try` と `catch` |
-| `old(x)` | 関数冒頭での値のコピーと `post` での比較 |
-| `effects(...)` | コンパイル時に検査して消去。`throw` がなければ `noexcept` |
-| `with io = ...` | スレッドローカルのハンドラをスコープの間だけ差し替える |
-| `test "..." {...}` | `CC_TEST` を定義したときだけ生成される関数と、テストを実行する `main` |
-| `once` / `fixed` | ムーブ専用型 / 深い const ラッパー |
-| `protocol` | 状態ごとの型を返すメソッド（typestate パターン） |
-
-### 9.4 変換例
-
-入力:
+## 11. 変換例
 
 ```cpp
 type Port = u16 where 1 <= self <= 65535;
@@ -291,72 +351,65 @@ type Port = u16 where 1 <= self <= 65535;
 ```cpp
 class Port {
   std::uint16_t v_;
-  explicit constexpr Port(std::uint16_t v) : v_(v) {}
+  struct Unchecked {};
+  constexpr Port(Unchecked, std::uint16_t v) : v_(v) {}
 public:
-  static constexpr std::expected<Port, RefineError> try_from(std::uint16_t v) {
-    if (!(1 <= v && v <= 65535)) return std::unexpected(RefineError{"Port", "1 <= self <= 65535"});
-    return Port{v};
+  template <std::integral A>
+  consteval Port(A v) : v_(static_cast<std::uint16_t>(v)) {  // リテラル用：検査はコンパイル時
+    if (!std::in_range<std::uint16_t>(v) || !(1 <= v && v <= 65535)) throw "Port の条件を満たしていません";
   }
-  template <cc::integer_like A> requires (!std::same_as<A, std::uint16_t>)
-  static constexpr std::expected<Port, RefineError> try_from(const A& a) {   // 他の整数は先に範囲を調べる
-    if (!cc::fits<std::uint16_t>(a)) return std::unexpected(RefineError{"Port", "u16 の範囲内"});
-    return try_from(static_cast<std::uint16_t>(cc::integer_value(a)));
-  }
-  template <std::uint16_t V> requires (1 <= V && V <= 65535)
-  static consteval Port of() { return Port{V}; }   // リテラル用：チェックはコンパイル時
+  template <cc::integer_like A>
+  static constexpr std::expected<Port, cc::RefineError> try_from(const A& a);  // 実行時：先に範囲を調べる
   constexpr std::uint16_t get() const { return v_; }
+  constexpr operator std::uint16_t() const { return v_; }
 };
 ```
 
 ---
 
-## 10. 試作ロードマップ
+## 12. ロードマップ
 
-| フェーズ | 内容 | 完了条件 | 状況 |
-|---|---|---|---|
-| **0. ヘッダーライブラリ** | トランスパイラなしで `expected` を返す parse、契約マクロを C++ で書く | 手書き C++ で User の parse とエラー全件報告が動く | 完了 |
-| **1. スキーマ＋関数契約** | `schema`、`type ... where`、`pre/post/old` を変換するトランスパイラ。実行時チェックのみ | `.c.c` → `.cpp` → g++ でビルドし、違反レポートが出る | 完了 |
-| **2. 効果システム** | `effects(...)` の検査、`with` によるハンドラ差し替え、`test` ブロック | 効果違反がコンパイルエラーになる。MemoryFs でテストが通る | 完了 |
-| **3. 静的証明とテスト生成** | Z3 連携で実行時チェックを削減。スキーマからテスト自動生成 | リテラルや単純な算術の条件がチェックなしになる | 未着手 |
-| **4. 所有と手順** | `once`、`fixed`、`protocol` | use-after-move と手順違反を検出 | 未着手 |
+| フェーズ | 内容 | 状況 |
+|---|---|---|
+| **0. ヘッダーライブラリ** | `expected` を返す parse、契約の実行時チェック | 完了（ランタイムは新方式でも使う） |
+| **1. 値と関数の契約** | `schema`、`type`、`pre` / `post` | 旧方式で完了。新方式へ移行する |
+| **2. 効果** | 効果の検査、ハンドラの差し替え、`test` | 旧方式で完了。**Clang ベースで作り直す** |
+| **3. 静的証明とテスト生成** | Z3 連携、テスト自動生成、JSON Schema | 未着手 |
+| **4. 所有と手順** | `once`、`fixed`、`protocol` | 未着手 |
 
-JSON Schema の出力（4.2）も未着手。
+技術の選択:
 
-### 10.1 フェーズ1の最小スコープ（MVP）
-
-- 型：`i32` `i64` `u16` `u64` `f64` `bool` `string` `vec<T>` `T?`
-- 宣言：`fn`、`contract fn`、`schema`、`type ... where`
-- 式：算術、比較、論理、`len()`、フィールドアクセス、関数呼び出し
-- 文：`let`、`return`、`if`、`for`、式文
-- 契約：`pre`、`post`、`old()`、`invariant`
-- 入出力：JSON のみ（実装は nlohmann/json などの既存ライブラリを利用）
-- C++ 直書き：`cpp { ... }` ブロックで生の C++ を埋め込める（逃げ道）
-
-### 10.2 技術選択の候補
-
-| 項目 | 候補 |
+| 項目 | 決定 |
 |---|---|
-| 実装言語 | Rust（決定） |
-| パーサ | 手書き再帰下降（決定。エラーメッセージを作り込みやすい） |
-| 出力先 | C++23（決定。g++ 13 以降。clang 18 + libstdc++ 13 は `std::expected` を使えない） |
+| `ccc` の実装言語 | Rust |
+| 拡張の解析 | 手書きの字句解析と再帰下降。C++ の部分は解析しない |
+| 出力 | C++23 |
+| ビルド | g++ 13 以降（`CXX` で変更可） |
+| 効果の検査 | Clang の AST（まず `-ast-dump=json` を試す） |
+| 契約の実行時チェック | 自前（`cc::violation`）。責任の報告に呼び出し位置と `.c.c` の条件文が要るため |
 | SMT | Z3（フェーズ3〜） |
 
 ---
 
-## 11. 決めたこと（元の未決事項）
+## 13. 決めたこと
 
-試作の CLI（`examples/confcheck.c.c`）を書いて見直した結果。経緯は [PLAN.md](PLAN.md) の7章にある。
+旧方式の試作（`examples/confcheck.c.c`）を書いて決めたことと、ドラフト 0.4 の方針転換で変わったことです。
 
-1. **効果を省略した関数**：「何でも可」とする。ただし、効果を宣言した関数から呼ぶには `unsafe` が必要
-2. **既存 C++ の効果**：既定で `unsafe` とし、`extern fn` で絞る。C++ のメソッド呼び出しも同じ扱い。生成された `to_json` と `get` だけは純粋とする
-3. **スキーマのエラー型**：フィールドのパス（`users[3].email`）を含む構造化データで、全件返す
-4. **`where` に書ける式**：リテラル・`self`・`len()`・算術・比較・論理に限る。任意の純粋関数は `invariant` に書く
-5. **構文の方向性**：名前と型の順を `名前: 型` に揃える（引数・フィールド・`let`）。文や式は C++ に寄せる
-6. **C++26 Contracts への依存度**：自前の実行時チェックを主にする
+| 項目 | 決定 | 0.4 での変更 |
+|---|---|---|
+| 言語の形 | **C++ の上位互換** | 独自文法から変更。書き慣れた C++ で書け、既存コードにも足せるため |
+| 効果を省略した関数 | 検査しない | 変更なし。ただし効果を宣言した関数から呼ぶと `unsafe` |
+| 既存 C++ の効果 | 既定で `unsafe`。`[[cc::effects]]` か効果の一覧で絞る | `extern fn` から変更 |
+| スキーマのエラー型 | パス付きの構造化データを全件返す | 変更なし |
+| `where` に書ける式 | リテラル・`self`・`len()`・算術・比較・論理に限る | 変更なし |
+| 構文の方向性 | C++ のまま。拡張の中だけ `名前: 型` | 変更 |
+| C++26 Contracts への依存度 | 実行時チェックは自前。構文は揃える | 構文を揃える点を追加 |
+| 効果の検査方法 | Clang の AST | 独自の解析から変更 |
+| `noexcept` | 自動では付けない | C++ の意味を変えないため変更 |
 
 ---
 
-## 12. 実現するとうれしいこと（動機の確認用）
+## 14. 実現するとうれしいこと（動機の確認用）
 
 - 入力チェックの書き忘れが型エラーになる（`Raw<T>` と `T` の区別）
 - 構造体・バリデーション・JSON 変換・ドキュメント・テストデータの二重管理がなくなる
@@ -365,7 +418,7 @@ JSON Schema の出力（4.2）も未着手。
 - 依存ライブラリが不審な効果を要求していたら気づける
 - モックなしでテストが書ける
 - AI が書いた実装を契約で機械的に検収できる（人間は契約をレビューする）
-- 既存の C++ 資産と性能を捨てずに導入できる
+- **既存の C++ を書き直さず、重要な箇所から導入できる**
 
 ---
 
@@ -376,4 +429,5 @@ JSON Schema の出力（4.2）も未着手。
   - https://isocpp.org/files/papers/P4043R0.html
 - Effectful Software Contracts (POPL 2024)
   - https://popl24.sigplan.org/details/POPL-2024-popl-research-papers/90/Effectful-Software-Contracts
-- 関連言語・ライブラリ: Dafny, F\*, Ada/SPARK, Koka, Eiffel, Racket contracts, cppfront, zod, Effect-TS, Verus
+- 関連言語・ライブラリ: TypeScript, Dafny, F\*, Ada/SPARK, Koka, Eiffel, Racket contracts, cppfront, Carbon, zod, Effect-TS, Verus
+- Clang の関連機能: 関数の効果の属性（`[[clang::nonblocking]]` など）、`-Wconsumed`、`-Wthread-safety`、clang-tidy

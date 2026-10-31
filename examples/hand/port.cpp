@@ -1,5 +1,5 @@
 // Step 0: the target shape for `type Port = u16 where 1 <= self <= 65535;`
-// (CONCEPT.md 9.4), written by hand.
+// (CONCEPT.md 11), written by hand.
 #include <cc/cc.hpp>
 
 class Port {
